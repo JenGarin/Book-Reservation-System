@@ -1,23 +1,49 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
+import { useLocation, useNavigate } from 'react-router-dom';
 import { useApp } from '@/context/AppContext';
-import { Calendar, Clock, MapPin, PhilippinePeso, Users as UsersIcon, CheckCircle } from 'lucide-react';
-import { format, addDays, startOfToday, isSameDay, parse } from 'date-fns';
+import { Calendar, Clock, MapPin, PhilippinePeso, Users as UsersIcon, CheckCircle, ChevronLeft, ChevronRight } from 'lucide-react';
+import { format, addDays, addMonths, startOfToday, isSameDay, isSameMonth, parse } from 'date-fns';
 import { toast } from 'sonner';
+import DatePicker from 'react-datepicker';
+import 'react-datepicker/dist/react-datepicker.css';
+
+const COURT_DISPLAY_NAMES: Record<string, string> = {
+  c1: 'Downtown Basketball Court A',
+  c2: 'Riverside Tennis Court 1',
+  c3: 'Pickle Ball Court 1',
+};
 
 export function BookingInterface() {
   const { courts, config, createBooking, getAvailableSlots, currentUser, bookings, joinSession, users } = useApp();
+  const location = useLocation();
+  const navigate = useNavigate();
+  const prefillCourtId = (location.state as { prefillCourtId?: string } | null)?.prefillCourtId;
   const [selectedCourt, setSelectedCourt] = useState(courts[0]?.id || '');
   const [selectedDate, setSelectedDate] = useState(startOfToday());
+  const [visibleMonth, setVisibleMonth] = useState(startOfToday());
   const [selectedTime, setSelectedTime] = useState('');
   const [bookingType, setBookingType] = useState<'open_play' | 'private' | 'training'>('private');
   const [duration, setDuration] = useState(60);
 
-  const availableDates = Array.from({ length: config.advanceBookingDays }, (_, i) =>
-    addDays(startOfToday(), i)
-  );
+  useEffect(() => {
+    if (!courts.length) return;
+
+    if (prefillCourtId && courts.some((c) => c.id === prefillCourtId)) {
+      setSelectedCourt(prefillCourtId);
+      return;
+    }
+
+    if (!selectedCourt) {
+      setSelectedCourt(courts[0]?.id || '');
+    }
+  }, [courts, prefillCourtId, selectedCourt]);
 
   const availableSlots = selectedCourt ? getAvailableSlots(selectedCourt, selectedDate, bookingType) : [];
   const selectedCourtData = courts.find((c) => c.id === selectedCourt);
+  const getCourtDisplayName = (courtId: string, fallbackName: string) =>
+    COURT_DISPLAY_NAMES[courtId] || fallbackName;
+  const today = startOfToday();
+  const calendarMaxDate = addMonths(today, 12);
 
   // Find existing sessions to join
   const joinableSessions = bookings.filter(b => 
@@ -53,27 +79,21 @@ export function BookingInterface() {
     const endMin = parseInt(selectedTime.split(':')[1]) + (duration % 60);
     const endTime = `${String(endHour).padStart(2, '0')}:${String(endMin).padStart(2, '0')}`;
 
-    createBooking({
-      courtId: selectedCourt,
-      userId: currentUser.id,
-      type: bookingType,
-      date: selectedDate,
-      startTime: selectedTime,
-      endTime,
-      duration,
-      status: 'confirmed',
-      paymentStatus: 'paid',
-      amount: calculatePrice(),
-      checkedIn: false,
-      maxPlayers: bookingType === 'open_play' ? 4 : undefined,
-      players: bookingType === 'open_play' ? [currentUser.id] : undefined,
+    navigate('/booking/payment', {
+      state: {
+        bookingDraft: {
+          courtId: selectedCourt,
+          type: bookingType,
+          date: selectedDate.toISOString(),
+          startTime: selectedTime,
+          endTime,
+          duration,
+          amount: calculatePrice(),
+          maxPlayers: bookingType === 'open_play' ? 4 : undefined,
+          players: bookingType === 'open_play' ? [currentUser.id] : undefined,
+        },
+      },
     });
-
-    toast.success('Booking confirmed!', {
-      description: `${format(selectedDate, 'MMM dd, yyyy')} at ${selectedTime}`,
-    });
-
-    setSelectedTime('');
   };
 
   const handleJoinSession = async (bookingId: string) => {
@@ -129,7 +149,7 @@ export function BookingInterface() {
               >
                 {courts.filter(c => c.status === 'active').map((court) => (
                   <option key={court.id} value={court.id}>
-                    {court.name} - {court.courtNumber} ({court.type}, {court.surfaceType})
+                    {getCourtDisplayName(court.id, court.name)} - {court.courtNumber} ({court.type}, {court.surfaceType})
                   </option>
                 ))}
               </select>
@@ -138,25 +158,57 @@ export function BookingInterface() {
             {/* Date Selection */}
             <div>
               <label className="block text-sm mb-2">Select Date</label>
-              <div className="grid grid-cols-4 gap-2">
-                {availableDates.map((date) => (
-                  <button
-                    key={date.toISOString()}
-                    onClick={() => {
-                      setSelectedDate(date);
-                      setSelectedTime('');
-                    }}
-                    className={`p-2 rounded-lg border-2 text-center transition-all ${
-                      selectedDate.toDateString() === date.toDateString()
-                        ? 'border-teal-600 bg-teal-50'
-                        : 'border-gray-200 hover:border-gray-300'
-                    }`}
-                  >
-                    <div className="text-xs text-gray-600">{format(date, 'EEE')}</div>
-                    <div className="text-lg">{format(date, 'dd')}</div>
-                    <div className="text-xs text-gray-600">{format(date, 'MMM')}</div>
-                  </button>
-                ))}
+              <div className="relative">
+                <Calendar className="w-4 h-4 text-gray-500 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+                <DatePicker
+                  selected={selectedDate}
+                  onChange={(date) => {
+                    if (!date) return;
+                    setSelectedDate(date);
+                    setVisibleMonth(date);
+                    setSelectedTime('');
+                  }}
+                  onMonthChange={(date) => setVisibleMonth(date)}
+                  minDate={today}
+                  maxDate={calendarMaxDate}
+                  dateFormat="MMMM d, yyyy"
+                  className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-teal-500"
+                  placeholderText="Select booking date"
+                  dayClassName={(date) =>
+                    isSameMonth(date, visibleMonth) ? 'current-month-day' : 'outside-month-day'
+                  }
+                  renderCustomHeader={({
+                    date,
+                    decreaseMonth,
+                    increaseMonth,
+                    prevMonthButtonDisabled,
+                    nextMonthButtonDisabled,
+                  }) => (
+                    <div className="flex items-center justify-between px-2 py-1 mb-2">
+                      <button
+                        type="button"
+                        onClick={decreaseMonth}
+                        disabled={prevMonthButtonDisabled}
+                        className="p-1 rounded hover:bg-slate-100 disabled:opacity-40"
+                        aria-label="Previous month"
+                      >
+                        <ChevronLeft className="w-4 h-4" />
+                      </button>
+                      <span className="text-sm font-semibold text-slate-800">
+                        {format(date, 'MMMM yyyy')}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={increaseMonth}
+                        disabled={nextMonthButtonDisabled}
+                        className="p-1 rounded hover:bg-slate-100 disabled:opacity-40"
+                        aria-label="Next month"
+                      >
+                        <ChevronRight className="w-4 h-4" />
+                      </button>
+                    </div>
+                  )}
+                />
               </div>
             </div>
 
@@ -245,7 +297,7 @@ export function BookingInterface() {
               <div className="space-y-2">
                 <div className="flex justify-between">
                   <span className="text-gray-600">Court:</span>
-                  <span>{selectedCourtData.name}</span>
+                  <span>{getCourtDisplayName(selectedCourtData.id, selectedCourtData.name)}</span>
                 </div>
                 <div className="flex justify-between">
                   <span className="text-gray-600">Date:</span>
@@ -275,7 +327,7 @@ export function BookingInterface() {
               className="w-full mt-4 bg-teal-600 text-white py-3 rounded-lg hover:bg-teal-700 transition-colors flex items-center justify-center gap-2"
             >
               <CheckCircle className="w-5 h-5" />
-              Confirm Booking
+              Proceed to Payment
             </button>
           </div>
         )}
@@ -287,8 +339,8 @@ export function BookingInterface() {
           <h3 className="text-lg mb-4">Court Information</h3>
           <div className="grid md:grid-cols-4 gap-4">
             <div className="p-4 bg-blue-50 rounded-lg">
-              <div className="text-sm text-blue-600 mb-1">Type</div>
-              <div className="capitalize">{selectedCourtData.type}</div>
+              <div className="text-sm text-blue-600 mb-1">Court</div>
+              <div>{getCourtDisplayName(selectedCourtData.id, selectedCourtData.name)}</div>
             </div>
             <div className="p-4 bg-green-50 rounded-lg">
               <div className="text-sm text-green-600 mb-1">Surface</div>

@@ -1,131 +1,573 @@
-import React, { useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useApp } from '@/context/AppContext';
 import { useNavigate } from 'react-router-dom';
-import { ArrowLeft, QrCode, CheckCircle, XCircle, Loader2, Camera } from 'lucide-react';
-import { toast } from 'sonner';
+import {
+  ArrowLeft,
+  CalendarDays,
+  CircleCheck,
+  MapPin,
+  QrCode,
+  CheckCircle2,
+} from 'lucide-react';
+import QRCode from 'react-qr-code';
+import { format, isSameDay, parse } from 'date-fns';
+
+const COURT_DISPLAY_NAMES: Record<string, string> = {
+  c1: 'Downtown Basketball Court A',
+  c2: 'Riverside Tennis Court 1',
+  c3: 'Pickle Ball Court 1',
+};
+
+const COURT_META: Record<string, { location: string; sport: string; image: string }> = {
+  c1: { location: 'Downtown Sports Complex', sport: 'Basketball', image: '/basketball.png' },
+  c2: { location: 'Riverside Park', sport: 'Tennis', image: '/tennis.png' },
+  c3: { location: 'Elite Sports Hub', sport: 'Pickle Ball', image: '/pickle%20ball.png' },
+};
 
 export function CheckIn() {
-  const { checkInBooking, bookings, courts, users } = useApp();
+  const { bookings, currentUser, courts, checkInBooking } = useApp();
   const navigate = useNavigate();
-  const [bookingId, setBookingId] = useState('');
-  const [isProcessing, setIsProcessing] = useState(false);
-  const [scanResult, setScanResult] = useState<{success: boolean; message: string; details?: any} | null>(null);
+  const [showQr, setShowQr] = useState(false);
 
-  const handleCheckIn = async (e?: React.FormEvent) => {
-    if (e) e.preventDefault();
-    if (!bookingId.trim()) return;
+  const [scanInput, setScanInput] = useState('');
+  const [manualBookingId, setManualBookingId] = useState('');
+  const [scannedBookingId, setScannedBookingId] = useState<string | null>(null);
+  const [scanError, setScanError] = useState('');
+  const [cameraOpen, setCameraOpen] = useState(false);
+  const [cameraError, setCameraError] = useState('');
 
-    setIsProcessing(true);
-    setScanResult(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+  const streamRef = useRef<MediaStream | null>(null);
+  const detectorRef = useRef<any>(null);
+  const rafRef = useRef<number | null>(null);
 
-    // Simulate scanning/processing delay
-    await new Promise(resolve => setTimeout(resolve, 800));
+  const isStaffView = currentUser?.role === 'admin' || currentUser?.role === 'staff';
 
-    // Normalize ID (handle case sensitivity or prefixes if needed)
-    const targetId = bookingId.trim();
-    const booking = bookings.find(b => b.id.toLowerCase() === targetId.toLowerCase());
+  const activeBooking = useMemo(() => {
+    if (!currentUser) return null;
 
-    if (booking) {
-      if (booking.checkedIn) {
-         setScanResult({ success: false, message: 'Already checked in.' });
-         toast.warning('Booking already checked in.');
-      } else if (booking.status === 'cancelled') {
-         setScanResult({ success: false, message: 'Booking is cancelled.' });
-         toast.error('Cannot check in cancelled booking.');
-      } else {
-        await checkInBooking(booking.id);
-        const court = courts.find(c => c.id === booking.courtId);
-        const player = users.find(u => u.id === booking.userId);
-        
-        setScanResult({
-            success: true,
-            message: 'Check-in Successful',
-            details: {
-                court: court?.name,
-                time: `${booking.startTime} - ${booking.endTime}`,
-                player: player?.name || 'Guest Player'
-            }
-        });
-        toast.success('Check-in successful!');
-        setBookingId('');
-      }
-    } else {
-        setScanResult({ success: false, message: 'Invalid Booking ID.' });
-        toast.error('Booking not found.');
-    }
+    const now = new Date();
+    const userBookings = bookings
+      .filter(
+        (b) =>
+          b.userId === currentUser.id &&
+          b.status !== 'cancelled' &&
+          b.status !== 'no_show' &&
+          !b.checkedIn
+      )
+      .sort((a, b) => a.date.getTime() - b.date.getTime());
 
-    setIsProcessing(false);
+    const todays = userBookings.filter((b) => isSameDay(new Date(b.date), now));
+    if (todays.length > 0) return todays[0];
+
+    const upcoming = userBookings.find((b) => new Date(b.date) >= now);
+    return upcoming || null;
+  }, [bookings, currentUser]);
+
+  const qrValue = activeBooking
+    ? JSON.stringify({
+        bookingId: activeBooking.id,
+        userId: activeBooking.userId,
+        courtId: activeBooking.courtId,
+        date: format(new Date(activeBooking.date), 'yyyy-MM-dd'),
+        startTime: activeBooking.startTime,
+        endTime: activeBooking.endTime,
+      })
+    : 'NO_BOOKING';
+
+  const bookingCourt = activeBooking
+    ? courts.find((c) => c.id === activeBooking.courtId)
+    : null;
+
+  const courtName = bookingCourt
+    ? (COURT_DISPLAY_NAMES[bookingCourt.id] || bookingCourt.name)
+    : 'No booking selected';
+
+  const formatTo12Hour = (time24: string) => {
+    const parsed = parse(time24, 'HH:mm', new Date());
+    return format(parsed, 'h:mm a').toLowerCase();
   };
 
-  return (
-    <div className="min-h-screen bg-slate-900 text-white flex flex-col animate-in fade-in duration-500">
-      {/* Header */}
-      <div className="p-4 flex items-center gap-4 border-b border-slate-800">
-        <button onClick={() => navigate('/dashboard')} className="p-2 hover:bg-slate-800 rounded-full transition-colors">
-          <ArrowLeft />
-        </button>
-        <h1 className="text-lg font-bold">Scanner</h1>
-      </div>
+  const bookingDateText = activeBooking
+    ? format(new Date(activeBooking.date), 'EEEE, MMMM d, yyyy')
+    : 'No booking date';
 
-      {/* Scanner Area */}
-      <div className="flex-1 flex flex-col items-center justify-center p-6 space-y-8">
-        <div className="relative w-full max-w-sm aspect-square bg-black rounded-3xl overflow-hidden border-2 border-slate-700 shadow-2xl">
-            {/* Mock Camera View */}
-            <div className="absolute inset-0 bg-gradient-to-b from-transparent via-teal-500/10 to-transparent animate-pulse z-10"></div>
-            <div className="absolute inset-0 flex items-center justify-center">
-                <Camera size={48} className="text-slate-700" />
-                <p className="absolute mt-20 text-sm text-slate-500 font-medium">Align QR code within frame</p>
+  const timeRange = activeBooking
+    ? `${formatTo12Hour(activeBooking.startTime)} - ${formatTo12Hour(activeBooking.endTime)}`
+    : 'No booking schedule';
+
+  const readBookingIdFromScan = (raw: string): string => {
+    const value = raw.trim();
+    if (!value) return '';
+
+    if (value.startsWith('{') && value.endsWith('}')) {
+      try {
+        const parsed = JSON.parse(value) as { bookingId?: string; id?: string };
+        if (parsed.bookingId) return parsed.bookingId;
+        if (parsed.id) return parsed.id;
+      } catch {
+        return value;
+      }
+    }
+
+    return value;
+  };
+
+  const verifyBookingId = (bookingId: string) => {
+    const booking = bookings.find((b) => b.id.toLowerCase() === bookingId.toLowerCase());
+    if (!booking) {
+      setScannedBookingId(null);
+      setScanError('Booking not found. Please scan a valid QR code.');
+      return false;
+    }
+
+    setScannedBookingId(booking.id);
+    setScanInput('');
+    setManualBookingId('');
+    setScanError('');
+    return true;
+  };
+
+  const handleScan = () => {
+    setScanError('');
+    const bookingId = (manualBookingId || '').trim() || readBookingIdFromScan(scanInput);
+    if (!bookingId) {
+      setScanError('Enter scanned QR payload or manual booking ID.');
+      return;
+    }
+    verifyBookingId(bookingId);
+  };
+
+  const stopCamera = () => {
+    if (rafRef.current !== null) {
+      cancelAnimationFrame(rafRef.current);
+      rafRef.current = null;
+    }
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach((track) => track.stop());
+      streamRef.current = null;
+    }
+    setCameraOpen(false);
+  };
+
+  const scanFromVideo = async () => {
+    if (!videoRef.current || !detectorRef.current) return;
+    try {
+      const barcodes = await detectorRef.current.detect(videoRef.current);
+      if (barcodes.length > 0 && barcodes[0].rawValue) {
+        const rawValue = String(barcodes[0].rawValue);
+        setScanInput(rawValue);
+        const bookingId = readBookingIdFromScan(rawValue);
+        verifyBookingId(bookingId);
+        stopCamera();
+        return;
+      }
+    } catch {
+      // Ignore frame-level detect errors and continue scanning.
+    }
+    rafRef.current = requestAnimationFrame(scanFromVideo);
+  };
+
+  const openCameraScanner = async () => {
+    setCameraError('');
+    setScanError('');
+    const BarcodeDetectorCtor = (window as any).BarcodeDetector;
+    if (!BarcodeDetectorCtor) {
+      setCameraError('Camera QR scanning is not supported in this browser.');
+      return;
+    }
+
+    try {
+      detectorRef.current = new BarcodeDetectorCtor({ formats: ['qr_code'] });
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: { ideal: 'environment' } },
+      });
+      streamRef.current = stream;
+      setCameraOpen(true);
+
+      if (videoRef.current) {
+        videoRef.current.srcObject = stream;
+        await videoRef.current.play();
+      }
+
+      rafRef.current = requestAnimationFrame(scanFromVideo);
+    } catch {
+      setCameraError('Unable to open camera. Check camera permissions and try again.');
+    }
+  };
+
+  const handleUploadQrImage = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    setCameraError('');
+    setScanError('');
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    const BarcodeDetectorCtor = (window as any).BarcodeDetector;
+    if (!BarcodeDetectorCtor) {
+      setCameraError('QR image decoding is not supported in this browser.');
+      return;
+    }
+
+    try {
+      detectorRef.current = new BarcodeDetectorCtor({ formats: ['qr_code'] });
+      const bitmap = await createImageBitmap(file);
+      const barcodes = await detectorRef.current.detect(bitmap);
+      if (!barcodes.length || !barcodes[0].rawValue) {
+        setScanError('No QR code found in the uploaded image.');
+      } else {
+        const rawValue = String(barcodes[0].rawValue);
+        setScanInput(rawValue);
+        const bookingId = readBookingIdFromScan(rawValue);
+        verifyBookingId(bookingId);
+      }
+      bitmap.close();
+    } catch {
+      setScanError('Failed to read QR from image. Please upload a clearer QR image.');
+    } finally {
+      if (fileInputRef.current) {
+        fileInputRef.current.value = '';
+      }
+    }
+  };
+
+  useEffect(() => {
+    return () => {
+      stopCamera();
+    };
+  }, []);
+
+  const scannedBooking = useMemo(() => {
+    if (!scannedBookingId) return null;
+    return bookings.find((b) => b.id === scannedBookingId) || null;
+  }, [bookings, scannedBookingId]);
+
+  const scannedCourt = scannedBooking
+    ? courts.find((c) => c.id === scannedBooking.courtId)
+    : null;
+
+  const scannedCourtName = scannedCourt
+    ? (COURT_DISPLAY_NAMES[scannedCourt.id] || scannedCourt.name)
+    : 'Unknown Court';
+
+  const scannedMeta = scannedCourt ? COURT_META[scannedCourt.id] : null;
+
+  const reservationFee = 10;
+  const durationHours = scannedBooking ? scannedBooking.duration / 60 : 0;
+  const ratePerHour = scannedBooking && durationHours > 0 ? scannedBooking.amount / durationHours : 0;
+  const totalWithFee = scannedBooking ? scannedBooking.amount + reservationFee : 0;
+
+  const handleConfirmCheckIn = async () => {
+    if (!scannedBooking || scannedBooking.checkedIn) return;
+    await checkInBooking(scannedBooking.id);
+  };
+
+  if (isStaffView) {
+    return (
+      <div className="min-h-screen bg-[#1f3a3c] text-slate-100 p-4 md:p-6 lg:p-8">
+        <main className="max-w-7xl mx-auto space-y-5">
+          <section className="rounded-3xl border border-white/10 bg-gradient-to-r from-[#2a4e52] to-[#326067] px-5 py-5">
+            <div className="flex items-center gap-4">
+              <img src="/ventra-logo.png" alt="Ventra" className="h-11 w-auto" />
+              <div className="min-w-0">
+                <h1 className="text-xl md:text-2xl font-semibold tracking-tight">Check-In Validation Center</h1>
+                <p className="text-sm text-slate-200">Scan a QR code or enter a booking ID to verify player access.</p>
+              </div>
             </div>
-            
-            {/* Corner Markers */}
-            <div className="absolute top-6 left-6 w-8 h-8 border-t-4 border-l-4 border-teal-500 rounded-tl-xl"></div>
-            <div className="absolute top-6 right-6 w-8 h-8 border-t-4 border-r-4 border-teal-500 rounded-tr-xl"></div>
-            <div className="absolute bottom-6 left-6 w-8 h-8 border-b-4 border-l-4 border-teal-500 rounded-bl-xl"></div>
-            <div className="absolute bottom-6 right-6 w-8 h-8 border-b-4 border-r-4 border-teal-500 rounded-br-xl"></div>
-        </div>
+          </section>
 
-        {/* Result Display */}
-        {scanResult && (
-            <div className={`w-full max-w-sm p-4 rounded-xl border ${scanResult.success ? 'bg-emerald-500/10 border-emerald-500/50 text-emerald-400' : 'bg-rose-500/10 border-rose-500/50 text-rose-400'} animate-in fade-in slide-in-from-bottom-4`}>
-                <div className="flex items-start gap-3">
-                    {scanResult.success ? <CheckCircle className="shrink-0" /> : <XCircle className="shrink-0" />}
-                    <div>
-                        <p className="font-bold">{scanResult.message}</p>
-                        {scanResult.details && (
-                            <div className="mt-1 text-sm opacity-90 text-slate-300">
-                                <p>{scanResult.details.court}</p>
-                                <p>{scanResult.details.time}</p>
-                                <p className="text-xs mt-1 text-slate-400">{scanResult.details.player}</p>
-                            </div>
-                        )}
+          <section className="rounded-3xl border border-white/10 bg-[#294d52] p-4 md:p-5 space-y-4 shadow-xl shadow-black/10">
+            <div className="flex items-start justify-between gap-3">
+              <div className="flex items-start gap-3">
+                <button
+                  onClick={() => navigate('/profile')}
+                  className="mt-0.5 p-2 rounded-full hover:bg-white/10 transition-colors"
+                  aria-label="Back"
+                >
+                  <ArrowLeft className="w-6 h-6" />
+                </button>
+                <div>
+                  <h2 className="text-lg md:text-xl font-semibold">Scan Booking QR</h2>
+                  <p className="text-sm text-slate-200">Use camera, upload QR image, or enter booking ID manually.</p>
+                </div>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <button
+                type="button"
+                onClick={openCameraScanner}
+                className="rounded-xl bg-teal-600 px-4 py-3 text-white font-semibold hover:bg-teal-700 transition-colors"
+              >
+                Open Camera
+              </button>
+              <button
+                type="button"
+                onClick={() => fileInputRef.current?.click()}
+                className="rounded-xl border border-slate-300 bg-white px-4 py-3 text-slate-900 font-semibold hover:bg-slate-50 transition-colors"
+              >
+                Upload QR Code
+              </button>
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept="image/*"
+                className="hidden"
+                onChange={handleUploadQrImage}
+              />
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-[1fr,auto] gap-3 items-center">
+              <input
+                type="text"
+                value={manualBookingId}
+                onChange={(e) => setManualBookingId(e.target.value)}
+                placeholder="Manual booking ID"
+                className="rounded-xl border border-slate-300 bg-white px-4 py-3 text-slate-900"
+              />
+              <button
+                type="button"
+                onClick={handleScan}
+                className="rounded-xl bg-slate-900 px-5 py-3 text-white font-semibold hover:bg-slate-800"
+              >
+                Verify ID
+              </button>
+            </div>
+
+            {scanInput && <p className="text-xs text-slate-200">Scanned QR detected and processed.</p>}
+
+            {scanError && <p className="text-rose-200 text-sm">{scanError}</p>}
+            {cameraError && <p className="text-amber-200 text-sm">{cameraError}</p>}
+
+            {cameraOpen && (
+              <div className="rounded-2xl border border-slate-300/40 bg-slate-900/80 p-4 w-full max-w-3xl">
+                <div className="flex items-center justify-between mb-3">
+                  <p className="text-sm text-slate-100">Point the camera at a QR code.</p>
+                  <button
+                    type="button"
+                    onClick={stopCamera}
+                    className="rounded-lg border border-slate-500 px-3 py-1 text-slate-100 text-sm hover:bg-white/10"
+                  >
+                    Close Camera
+                  </button>
+                </div>
+                <video ref={videoRef} className="w-full rounded-xl bg-black" playsInline muted />
+              </div>
+            )}
+          </section>
+
+          {scannedBooking && scannedCourt && (
+            <div className="grid grid-cols-1 xl:grid-cols-[1.15fr,0.85fr] gap-6">
+              <div className="space-y-6">
+                <section className="bg-[#f2f4f5] rounded-3xl p-6 border border-slate-300 text-slate-900 shadow-md">
+                  <h2 className="text-2xl md:text-3xl font-semibold mb-4">Booking Details</h2>
+                  <p className="text-base md:text-lg mb-5">
+                    Booking Reference No.: BK-{format(new Date(scannedBooking.date), 'yyyyMMdd')}-{scannedBooking.id.slice(0, 4).toUpperCase()}
+                  </p>
+
+                  <h3 className="text-xl md:text-2xl font-semibold mb-3">Check In</h3>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-y-3 gap-x-5 text-base md:text-lg">
+                    <p>{format(new Date(scannedBooking.date), 'EEEE d MMM yyyy')}</p>
+                    <p>Time: {formatTo12Hour(scannedBooking.startTime)} - {formatTo12Hour(scannedBooking.endTime)}</p>
+                    <p>Total Duration: {durationHours} {durationHours === 1 ? 'Hour' : 'Hours'}</p>
+                    <p>No. of Players: {Math.max(1, scannedBooking.players?.length || 1)} players</p>
+                  </div>
+
+                  <div className="mt-6 text-base md:text-lg flex items-center gap-2.5">
+                    <span className="font-semibold">Booking status:</span>
+                    <span className="inline-flex items-center gap-2 text-slate-700">
+                      <CheckCircle2 className="w-4 h-4" />
+                      {scannedBooking.checkedIn ? 'Checked In' : 'Confirmed'}
+                    </span>
+                  </div>
+                </section>
+
+                <section className="bg-[#f2f4f5] rounded-3xl p-6 border border-slate-300 text-slate-900 shadow-md">
+                  <h3 className="text-2xl md:text-3xl font-semibold mb-5">Payment Summary</h3>
+                  <div className="space-y-3 text-base md:text-lg">
+                    <div className="flex items-center justify-between">
+                      <span>Rate:</span>
+                      <span className="font-semibold">PHP {ratePerHour.toFixed(0)} / hour</span>
                     </div>
-                </div>
-            </div>
-        )}
+                    <div className="flex items-center justify-between">
+                      <span>Duration:</span>
+                      <span className="font-semibold">{durationHours} hours</span>
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <span>Subtotal:</span>
+                      <span className="font-semibold">PHP {scannedBooking.amount.toFixed(0)}</span>
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <span>Reservation Fee:</span>
+                      <span className="font-semibold">PHP {reservationFee.toFixed(0)}</span>
+                    </div>
+                  </div>
 
-        {/* Manual Entry */}
-        <div className="w-full max-w-sm space-y-4">
-            <div className="relative">
-                <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
-                    <QrCode className="h-5 w-5 text-slate-500" />
-                </div>
-                <input
-                    type="text"
-                    value={bookingId}
-                    onChange={(e) => setBookingId(e.target.value)}
-                    placeholder="Enter Booking ID (e.g. BK-9021)"
-                    className="block w-full pl-10 pr-3 py-3 border border-slate-700 rounded-xl leading-5 bg-slate-800 text-slate-100 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-teal-500 focus:border-teal-500 sm:text-sm transition-colors"
-                    onKeyDown={(e) => e.key === 'Enter' && handleCheckIn()}
-                />
+                  <div className="mt-5 bg-[#9ccfcb] rounded-2xl p-4 text-base md:text-lg">
+                    <div className="flex items-center justify-between">
+                      <span>Total:</span>
+                      <span className="font-bold">PHP {totalWithFee.toFixed(0)}</span>
+                    </div>
+                    <div className="flex items-center justify-between mt-2">
+                      <span>Payment Status:</span>
+                      <span className="font-bold uppercase">{scannedBooking.paymentStatus}</span>
+                    </div>
+                    <div className="text-right mt-2 font-medium">E-Payment</div>
+                  </div>
+
+                  <button
+                    type="button"
+                    disabled={scannedBooking.checkedIn}
+                    onClick={handleConfirmCheckIn}
+                    className="mt-5 rounded-xl bg-teal-600 px-5 py-3 text-white font-semibold hover:bg-teal-700 disabled:opacity-60 w-full md:w-auto"
+                  >
+                    {scannedBooking.checkedIn ? 'Already Checked In' : 'Confirm Check-In'}
+                  </button>
+                </section>
+              </div>
+
+              <div className="space-y-6">
+                <section className="bg-[#f2f4f5] rounded-2xl border border-slate-300 overflow-hidden shadow-md text-slate-900">
+                  <img
+                    src={scannedMeta?.image || '/tennis.png'}
+                    alt={scannedCourtName}
+                    className="w-full h-72 object-cover"
+                  />
+                  <div className="p-6 space-y-4 text-base md:text-lg">
+                    <h4 className="text-2xl md:text-3xl font-semibold">{scannedCourtName}</h4>
+                    <p className="flex items-center gap-2 text-slate-700 text-sm md:text-base">
+                      <MapPin className="w-4 h-4" />
+                      {scannedMeta?.location || 'Court Location'}
+                    </p>
+                    <div className="flex items-center justify-between">
+                      <span>Sport</span>
+                      <span className="px-3 py-1 rounded-xl bg-teal-500 text-white text-base font-semibold">
+                        {scannedMeta?.sport || 'Court Sport'}
+                      </span>
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <span>Price</span>
+                      <span className="font-semibold">PHP {ratePerHour.toFixed(0)}/hour</span>
+                    </div>
+                  </div>
+                </section>
+
+                <p className="text-base leading-relaxed text-slate-100">
+                  <span className="font-semibold">Note:</span><br />
+                  Please arrive on time. Check-in may be required before play.
+                </p>
+              </div>
             </div>
-            <button
-                onClick={() => handleCheckIn()}
-                disabled={isProcessing || !bookingId}
-                className="w-full flex justify-center py-3 px-4 border border-transparent rounded-xl shadow-sm text-sm font-bold text-white bg-teal-600 hover:bg-teal-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-teal-500 disabled:opacity-50 disabled:cursor-not-allowed transition-all"
-            >
-                {isProcessing ? <Loader2 className="animate-spin" /> : 'Check In'}
-            </button>
+          )}
+        </main>
+      </div>
+    );
+  }
+
+  return (
+    <div className="min-h-screen bg-[#1F464A] text-slate-100 py-4 px-4 md:px-6">
+      <div className="max-w-5xl mx-auto flex flex-col gap-4">
+        <div className="flex items-center gap-4">
+          <button
+            onClick={() => navigate('/profile')}
+            className="p-2 rounded-full hover:bg-white/10 transition-colors"
+            aria-label="Back to Profile"
+          >
+            <ArrowLeft className="w-5 h-5" />
+          </button>
+          <div>
+            <h1 className="text-2xl font-semibold leading-tight">QR Check-In</h1>
+            <p className="text-slate-200 text-sm">Show your booking QR code to staff upon arrival.</p>
+          </div>
         </div>
+
+        <section className="relative bg-[#eef1f2] text-slate-900 rounded-3xl border border-slate-300 shadow-sm p-4 md:p-6">
+          {!showQr ? (
+            <div className="grid grid-cols-1 lg:grid-cols-[1.4fr,0.8fr] gap-6 items-center min-h-[240px]">
+              <div className="space-y-5">
+                <div className="flex items-center gap-3">
+                  <CalendarDays className="w-7 h-7 text-slate-900" />
+                  <h2 className="text-2xl font-semibold tracking-tight">Today's Booking</h2>
+                </div>
+
+                {activeBooking ? (
+                  <div className="rounded-2xl bg-white border border-slate-200 p-5 flex items-start gap-3">
+                    <MapPin className="w-6 h-6 mt-1 text-slate-800" />
+                    <div className="leading-tight">
+                      <p className="text-2xl font-semibold text-slate-900">{courtName}</p>
+                      <p className="text-lg text-slate-800 mt-1">{timeRange}</p>
+                      <p className="text-sm text-slate-600 mt-2">{bookingDateText}</p>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="rounded-2xl bg-white border border-slate-200 p-5">
+                    <p className="text-xl font-semibold text-slate-700">No booking available</p>
+                    <p className="text-sm md:text-base text-slate-600 mt-1">Book a court to generate your QR check-in code.</p>
+                  </div>
+                )}
+              </div>
+
+              <div className="flex justify-start lg:justify-end">
+                <button
+                  type="button"
+                  onClick={() => activeBooking && setShowQr(true)}
+                  disabled={!activeBooking}
+                  className="bg-[#1F464A] hover:bg-[#1b3f43] disabled:opacity-60 disabled:cursor-not-allowed text-white rounded-2xl px-6 py-5 min-w-[250px] md:min-w-[290px] transition-all text-left shadow-sm hover:shadow-md"
+                >
+                  <div className="flex items-start gap-3">
+                    <div className="bg-white/15 rounded-lg p-2 shrink-0">
+                      <QrCode className="w-6 h-6 text-white" />
+                    </div>
+                    <div className="leading-tight">
+                      <p className="text-base md:text-lg font-semibold">Show QR Booking Details</p>
+                      <p className="text-xs md:text-sm text-teal-100 mt-1">Click to display your QR code for check-in.</p>
+                    </div>
+                  </div>
+                </button>
+              </div>
+            </div>
+          ) : (
+            <div className="flex flex-col items-center justify-center gap-2.5 min-h-[240px]">
+              <button
+                type="button"
+                onClick={() => setShowQr(false)}
+                className="absolute top-4 left-4 p-2 rounded-full hover:bg-slate-100 text-slate-700 transition-colors"
+                aria-label="Back to Show QR Booking Details"
+              >
+                <ArrowLeft className="w-5 h-5" />
+              </button>
+              <p className="text-sm text-slate-500">Scan this QR code at the counter</p>
+              <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm">
+                <QRCode value={qrValue} size={190} />
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowQr(false)}
+                className="w-full max-w-[220px] text-sm py-2 rounded-lg border border-slate-300 bg-white text-slate-700 hover:bg-slate-50 transition-colors"
+              >
+                Hide QR
+              </button>
+              <p className="text-xs text-slate-500">QR auto-generated for your next active booking.</p>
+            </div>
+          )}
+        </section>
+
+        <section className="bg-white text-slate-900 rounded-2xl border border-slate-200 shadow-sm p-5 md:p-6">
+          <div className="flex items-center gap-3 mb-3">
+            <CircleCheck className="w-5 h-5 text-teal-700" />
+            <h3 className="text-xl font-semibold">How to Check-In</h3>
+          </div>
+          <ol className="list-decimal pl-6 md:pl-8 space-y-2 text-sm md:text-[15px] text-slate-700">
+            <li>Check-in window opens 30 minutes before your booking time.</li>
+            <li>Show this QR code to staff to verify your booking.</li>
+            <li>Staff scans the QR code to complete your check-in.</li>
+            <li>If you do not check in within 15 minutes of start time, your booking may be released.</li>
+          </ol>
+          <div className="mt-4 p-3 rounded-lg bg-teal-50 text-teal-800 text-sm flex items-center gap-2">
+            <QrCode className="w-4 h-4" />
+            Keep this page open while entering the facility for faster check-in.
+          </div>
+        </section>
       </div>
     </div>
   );

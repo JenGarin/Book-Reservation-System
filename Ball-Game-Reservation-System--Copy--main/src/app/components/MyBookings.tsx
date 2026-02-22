@@ -4,6 +4,12 @@ import { ArrowLeft, Calendar, MapPin, Clock, PhilippinePeso, X, CheckCircle } fr
 import { format } from 'date-fns';
 import { toast } from 'sonner';
 
+const COURT_DISPLAY_NAMES: Record<string, string> = {
+  c1: 'Downtown Basketball Court A',
+  c2: 'Riverside Tennis Court 1',
+  c3: 'Pickle Ball Court 1',
+};
+
 export function MyBookings() {
   const { currentUser, bookings, courts, cancelBooking } = useApp();
   const navigate = useNavigate();
@@ -41,7 +47,7 @@ export function MyBookings() {
             <ArrowLeft className="w-6 h-6" />
           </button>
           <div>
-            <h1 className="text-2xl">My Bookings</h1>
+            <h1 className="text-2xl">My Reservation</h1>
             <p className="text-gray-600 text-sm">{myBookings.length} total bookings</p>
           </div>
         </div>
@@ -64,6 +70,9 @@ export function MyBookings() {
           <div className="space-y-4">
             {myBookings.map((booking) => {
               const court = courts.find(c => c.id === booking.courtId);
+              const courtDisplayName = court
+                ? (COURT_DISPLAY_NAMES[court.id] || court.name)
+                : 'Unknown Court';
               return (
                 <div key={booking.id} className="bg-white rounded-xl shadow-lg p-6">
                   <div className="flex items-start justify-between mb-4">
@@ -72,7 +81,7 @@ export function MyBookings() {
                         <MapPin className="w-8 h-8 text-teal-600" />
                       </div>
                       <div>
-                        <h3 className="text-xl mb-1">{court?.name || 'Unknown Court'}</h3>
+                        <h3 className="text-xl mb-1">{courtDisplayName}</h3>
                         <p className="text-gray-600 text-sm">Court #{court?.courtNumber}</p>
                       </div>
                     </div>

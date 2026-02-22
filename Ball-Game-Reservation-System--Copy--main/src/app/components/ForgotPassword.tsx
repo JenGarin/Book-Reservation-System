@@ -30,7 +30,7 @@ export function ForgotPassword() {
     <div className="min-h-screen bg-gray-50 dark:bg-slate-950 flex items-center justify-center p-4">
       <div className="max-w-md w-full bg-white dark:bg-slate-900 rounded-2xl shadow-xl p-8 border border-slate-200 dark:border-slate-800">
         <div className="text-center mb-8">
-          <img src="/ventra-logo.png" alt="Ventra" className="h-20 w-auto mx-auto mb-6" />
+          <img src="/ventra-logo.png" alt="Ventra" className="h-24 w-auto mx-auto mb-6" />
           <h1 className="text-2xl font-bold text-slate-900 dark:text-white">Forgot Password?</h1>
           <p className="text-slate-500 dark:text-slate-400 mt-2">
             Enter your email address and we'll send you instructions to reset your password.

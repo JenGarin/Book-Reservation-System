@@ -20,7 +20,10 @@ export function Login() {
   const navigate = useNavigate();
   const location = useLocation();
   const [rememberMe, setRememberMe] = useState(!!localStorage.getItem('rememberedEmail'));
-  const selectedRole = (location.state as { role?: string } | null)?.role;
+  const roleFromQuery = new URLSearchParams(location.search).get('role');
+  const selectedRole =
+    roleFromQuery ||
+    (location.state as { role?: string } | null)?.role;
   const roleLabel = selectedRole ? selectedRole.toLowerCase() : 'player';
   const roleArticle = roleLabel === 'admin' ? 'an' : 'a';
 
@@ -30,8 +33,8 @@ export function Login() {
     setLoading(true);
 
     try {
-      const result = await login(email, password);
-      if (result) {
+      const result = await login(email, password, selectedRole as 'admin' | 'coach' | 'player' | undefined);
+      if (result.success) {
         if (rememberMe) {
           localStorage.setItem('rememberedEmail', email);
         } else {
@@ -39,7 +42,7 @@ export function Login() {
         }
         navigate('/dashboard');
       } else {
-        setError('Invalid credentials. Please check your email and password.');
+        setError(result.message || 'Invalid credentials. Please check your email and password.');
       }
     } catch (err) {
       setError('An unexpected error occurred. Please try again.');
@@ -68,7 +71,7 @@ export function Login() {
       <div className="absolute inset-0 bg-indigo-900/40 backdrop-blur-sm"></div>
       <div className="bg-white/95 backdrop-blur-xl rounded-2xl shadow-2xl w-full max-w-md p-6 md:p-7 relative z-10 border border-white/50 animate-in fade-in zoom-in-95 duration-500" role="main" aria-label="Login form">
         <div className="text-center mb-5">
-          <img src="/ventra-logo.png" alt="Ventra" className="h-20 md:h-24 w-auto mx-auto mb-4" />
+          <img src="/ventra-logo.png" alt="Ventra" className="h-24 md:h-28 w-auto mx-auto mb-4" />
           <h1 className="text-2xl md:text-3xl text-slate-900 mb-1">Court Booking System</h1>
           <p className="text-gray-600">
             {selectedRole ? `Sign in as ${selectedRole}` : 'Sign in to manage your bookings'}
@@ -190,7 +193,7 @@ export function Login() {
         </div>
 
         <Link
-          to="/signup"
+          to={`/signup${selectedRole ? `?role=${selectedRole}` : ''}`}
           className="w-full mt-3 bg-green-600 text-white py-2.5 rounded-lg hover:bg-green-700 transition-colors flex items-center justify-center gap-2 font-medium"
         >
           <UserPlus className="w-5 h-5" />

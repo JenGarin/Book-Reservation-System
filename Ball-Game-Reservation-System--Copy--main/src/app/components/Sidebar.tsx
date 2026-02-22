@@ -1,5 +1,6 @@
 import React from 'react';
 import { useNavigate } from 'react-router-dom';
+import { createPortal } from 'react-dom';
 import { 
   LayoutDashboard, 
   Calendar, 
@@ -14,7 +15,6 @@ import {
   Moon,
   Sun,
   Bell,
-  ChevronDown,
   Receipt,
   ClipboardList,
   ListChecks
@@ -36,9 +36,8 @@ interface SidebarProps {
 
 export function Sidebar({ currentView, onViewChange, role }: SidebarProps) {
   const { theme, setTheme } = useTheme();
-  const { notifications, currentUser, markAllNotificationsAsRead, logout, bookings } = useApp();
+  const { notifications, currentUser, logout, bookings } = useApp();
   const navigate = useNavigate();
-  const [isNotificationsOpen, setIsNotificationsOpen] = React.useState(false);
   const [isLogoutConfirmOpen, setIsLogoutConfirmOpen] = React.useState(false);
   const unreadCount = notifications.filter(n => n.userId === currentUser?.id && !n.read).length;
   const pendingCount = bookings.filter(b => b.status === 'pending').length;
@@ -53,7 +52,7 @@ export function Sidebar({ currentView, onViewChange, role }: SidebarProps) {
     { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard, roles: ['admin', 'staff', 'coach', 'player'] },
     { id: 'requests', label: 'Requests', icon: ListChecks, roles: ['admin', 'staff'] },
     { id: 'booking', label: 'Book a Court', icon: Calendar, roles: ['admin', 'staff', 'coach', 'player'] },
-    { id: 'my-bookings', label: 'My Bookings', icon: History, roles: ['player', 'coach'] },
+    { id: 'my-bookings', label: 'My Reservation', icon: History, roles: ['player', 'coach'] },
     { id: 'coach-sessions', label: 'My Sessions', icon: ClipboardList, roles: ['coach'] },
     { id: 'court-mgmt', label: 'Courts', icon: Dribbble, roles: ['admin', 'staff'] },
     { id: 'users', label: 'Players', icon: Users, roles: ['admin', 'staff'] },
@@ -68,68 +67,36 @@ export function Sidebar({ currentView, onViewChange, role }: SidebarProps) {
   const filteredItems = menuItems.filter(item => item.roles.includes(role));
 
   return (
-    <aside className="w-64 bg-gray-50 border-r border-slate-200 h-screen flex flex-col fixed left-0 top-0 transition-colors duration-300">
+    <aside className="w-64 bg-gray-50 border-r border-slate-200 h-screen flex flex-col fixed left-0 top-0 transition-colors duration-300 overflow-hidden">
       <div className="p-6 flex items-center justify-center">
-        <img src="/ventra-logo.png" alt="Ventra" className="h-20 w-auto" />
+        <img src="/ventra-logo.png" alt="Ventra" className="h-24 w-auto" />
       </div>
 
-      <nav className="flex-1 px-4 py-4 space-y-1">
+      <nav className="flex-1 px-4 py-4 space-y-1 overflow-y-auto">
         {filteredItems.map((item) => {
           const Icon = item.icon;
           const isActive = currentView === item.id;
 
           if (item.id === 'notifications') {
             return (
-              <div key={item.id} className="space-y-1">
-                <button
-                  onClick={() => setIsNotificationsOpen(!isNotificationsOpen)}
-                  className={cn(
-                    "w-full flex items-center gap-3 px-4 py-3 rounded-lg text-sm font-medium transition-colors relative",
-                    isActive || isNotificationsOpen
-                      ? "bg-teal-50 dark:bg-teal-900/20 text-teal-700 dark:text-teal-400" 
-                      : "text-slate-600 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-800 hover:text-slate-900 dark:hover:text-slate-50"
-                  )}
-                >
-                  <Icon size={20} />
-                  {item.label}
-                  {unreadCount > 0 && (
-                    <span className="absolute right-8 bg-rose-500 text-white text-[10px] font-bold px-1.5 py-0.5 rounded-full min-w-[1.25rem] text-center">
-                      {unreadCount}
-                    </span>
-                  )}
-                  <ChevronDown size={16} className={cn("absolute right-3 transition-transform text-slate-400", isNotificationsOpen ? "rotate-180" : "")} />
-                </button>
-
-                {isNotificationsOpen && (
-                  <div className="px-4 py-2 space-y-2 bg-slate-50 dark:bg-slate-800/50 mx-2 rounded-xl animate-in slide-in-from-top-2 duration-200">
-                    {unreadCount > 0 && (
-                      <div className="flex justify-end pb-2 border-b border-slate-200 dark:border-slate-700 mb-2">
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            markAllNotificationsAsRead();
-                          }}
-                          className="text-[10px] font-bold text-teal-600 hover:text-teal-700"
-                        >
-                          Mark all as read
-                        </button>
-                      </div>
-                    )}
-                    {notifications.filter(n => n.userId === currentUser?.id).slice(0, 3).map(n => (
-                      <div key={n.id} className="text-xs border-b border-slate-200 dark:border-slate-700 last:border-0 pb-2 last:pb-0">
-                        <p className={cn("text-slate-700 dark:text-slate-300 truncate", !n.read ? "font-bold" : "font-medium")}>{n.title}</p>
-                        <p className="text-slate-500 dark:text-slate-400 truncate">{n.message}</p>
-                      </div>
-                    ))}
-                    <button 
-                      onClick={() => onViewChange('notifications')}
-                      className="w-full text-xs font-bold text-teal-600 hover:text-teal-700 pt-1 text-center"
-                    >
-                      View All Notifications
-                    </button>
-                  </div>
+              <button
+                key={item.id}
+                onClick={() => onViewChange('notifications')}
+                className={cn(
+                  "w-full flex items-center gap-3 px-4 py-3 rounded-lg text-sm font-medium transition-colors relative",
+                  isActive
+                    ? "bg-teal-50 dark:bg-teal-900/20 text-teal-700 dark:text-teal-400" 
+                    : "text-slate-600 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-800 hover:text-slate-900 dark:hover:text-slate-50"
                 )}
-              </div>
+              >
+                <Icon size={20} />
+                {item.label}
+                {unreadCount > 0 && (
+                  <span className="absolute right-3 bg-rose-500 text-white text-[10px] font-bold px-1.5 py-0.5 rounded-full min-w-[1.25rem] text-center">
+                    {unreadCount}
+                  </span>
+                )}
+              </button>
             );
           }
 
@@ -161,7 +128,7 @@ export function Sidebar({ currentView, onViewChange, role }: SidebarProps) {
         })}
       </nav>
 
-      <div className="p-4 border-t border-slate-200 dark:border-slate-800 space-y-4">
+      <div className="p-4 border-t border-slate-200 dark:border-slate-800 space-y-4 shrink-0 bg-gray-50">
         <button
           onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
           className="w-full flex items-center gap-3 px-4 py-3 rounded-lg text-sm font-medium text-slate-600 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors"
@@ -189,28 +156,30 @@ export function Sidebar({ currentView, onViewChange, role }: SidebarProps) {
       </div>
 
       {/* Logout Confirmation Modal */}
-      {isLogoutConfirmOpen && (
-        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-          <div className="bg-white dark:bg-slate-900 rounded-2xl w-full max-w-sm shadow-2xl border border-slate-200 dark:border-slate-800 animate-in zoom-in-95 duration-200 p-6">
-            <h3 className="text-lg font-bold text-slate-900 dark:text-white mb-2">Sign Out</h3>
-            <p className="text-slate-500 dark:text-slate-400 mb-6">Are you sure you want to sign out of your account?</p>
-            <div className="flex gap-3 justify-end">
-              <button 
-                onClick={() => setIsLogoutConfirmOpen(false)}
-                className="px-4 py-2 text-slate-600 dark:text-slate-400 font-medium hover:bg-slate-50 dark:hover:bg-slate-800 rounded-lg transition-colors"
-              >
-                Cancel
-              </button>
-              <button 
-                onClick={handleConfirmLogout}
-                className="px-4 py-2 bg-red-600 text-white rounded-lg font-bold hover:bg-red-700 transition-colors"
-              >
-                Sign Out
-              </button>
+      {isLogoutConfirmOpen &&
+        createPortal(
+          <div className="fixed inset-0 z-[9999] bg-black/85 flex items-center justify-center p-4">
+            <div className="bg-white dark:bg-slate-900 rounded-2xl w-full max-w-sm shadow-2xl border border-slate-200 dark:border-slate-800 animate-in zoom-in-95 duration-200 p-6">
+              <h3 className="text-lg font-bold text-slate-900 dark:text-white mb-2">Sign Out</h3>
+              <p className="text-slate-500 dark:text-slate-400 mb-6">Are you sure you want to sign out of your account?</p>
+              <div className="flex gap-3 justify-end">
+                <button
+                  onClick={() => setIsLogoutConfirmOpen(false)}
+                  className="px-4 py-2 text-slate-600 dark:text-slate-400 font-medium hover:bg-slate-50 dark:hover:bg-slate-800 rounded-lg transition-colors"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={handleConfirmLogout}
+                  className="px-4 py-2 bg-red-600 text-white rounded-lg font-bold hover:bg-red-700 transition-colors"
+                >
+                  Sign Out
+                </button>
+              </div>
             </div>
-          </div>
-        </div>
-      )}
+          </div>,
+          document.body
+        )}
     </aside>
   );
 }

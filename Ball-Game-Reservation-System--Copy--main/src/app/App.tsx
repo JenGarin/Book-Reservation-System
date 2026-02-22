@@ -9,7 +9,9 @@ import { ForgotPassword } from './components/ForgotPassword';
 import { LandingPage } from './components/LandingPage';
 import { Sidebar } from './components/Sidebar';
 import { DashboardView } from './components/DashboardView';
+import { DashboardDesign } from './components/DashboardDesign';
 import { BookingInterface } from './components/BookingInterface';
+import { BookingPayment } from './components/BookingPayment';
 import { MyBookings } from './components/MyBookings';
 import { CourtManagementView } from './components/CourtManagementView';
 import { Reports } from './components/Reports';
@@ -17,11 +19,14 @@ import { ProfileSettings } from './components/ProfileSettings';
 import Pricing from './components/Pricing';
 import { CheckIn } from './components/CheckIn';
 import { UserPortalView } from './components/UserPortalView';
+import { CoachPortalView } from './components/CoachPortalView';
+import { CoachProfileView } from './components/CoachProfileView';
 import { NotificationsView } from './components/NotificationsView';
 import { UserManagementView } from './components/UserManagementView';
 import { SettingsView } from './components/SettingsView';
 import { PaymentHistory } from './components/PaymentHistory';
 import { CoachSessions } from './components/CoachSessions';
+import { PendingBookings } from './components/PendingBookings';
 
 function DashboardLayout() {
   const { currentUser } = useApp();
@@ -54,7 +59,24 @@ function DashboardLayout() {
 
 function DashboardHome() {
   const { currentUser } = useApp();
-  return (currentUser?.role === 'admin' || currentUser?.role === 'staff') ? <DashboardView /> : <UserPortalView />;
+  if (currentUser?.role === 'admin' || currentUser?.role === 'staff') return <DashboardView />;
+  if (currentUser?.role === 'coach') return <CoachProfileView />;
+  return <UserPortalView />;
+}
+
+function ProfileEntry() {
+  const { currentUser } = useApp();
+  if (currentUser?.role === 'admin') return <UserPortalView />;
+  if (currentUser?.role === 'staff') return <ProfileSettings />;
+  if (currentUser?.role === 'coach') return <CoachProfileView />;
+  return <UserPortalView />;
+}
+
+function DashboardEntry() {
+  const { currentUser } = useApp();
+  if (currentUser?.role === 'admin' || currentUser?.role === 'staff') return <DashboardView />;
+  if (currentUser?.role === 'coach') return <CoachPortalView />;
+  return <DashboardDesign />;
 }
 
 export default function App() {
@@ -70,12 +92,15 @@ export default function App() {
             <Route path="/forgot-password" element={<ForgotPassword />} />
             
             <Route element={<DashboardLayout />}>
-              <Route path="/dashboard" element={<DashboardHome />} />
+              <Route path="/dashboard" element={<DashboardEntry />} />
               <Route path="/booking" element={<BookingInterface />} />
+              <Route path="/booking/payment" element={<BookingPayment />} />
               <Route path="/my-bookings" element={<MyBookings />} />
               <Route path="/court-mgmt" element={<CourtManagementView />} />
               <Route path="/analytics" element={<Reports />} />
-              <Route path="/profile" element={<ProfileSettings />} />
+              <Route path="/requests" element={<PendingBookings />} />
+              <Route path="/profile" element={<ProfileEntry />} />
+              <Route path="/profile-settings" element={<ProfileSettings />} />
               <Route path="/notifications" element={<NotificationsView />} />
               <Route path="/pricing" element={<Pricing />} />
               <Route path="/users" element={<UserManagementView />} />

@@ -34,7 +34,7 @@ interface AppContextType {
   userSubscription: UserSubscription | null;
   subscriptionHistory: UserSubscription[];
   notifications: Notification[];
-  login: (email: string, password: string) => Promise<boolean>;
+  login: (email: string, password: string, expectedRole?: User['role']) => Promise<{ success: boolean; message?: string }>;
   signup: (email: string, password: string, role?: string) => Promise<{ success: boolean; message?: string }>;
   signInWithProvider: (provider: 'google' | 'facebook', role?: string) => Promise<{ success: boolean; message?: string }>;
   logout: () => void;
@@ -255,8 +255,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
     localStorage.setItem(key, JSON.stringify(data));
   };
 
-  const login = async (email: string, password: string): Promise<boolean> => {
+  const login = async (
+    email: string,
+    password: string,
+    expectedRole?: User['role']
+  ): Promise<{ success: boolean; message?: string }> => {
     await new Promise(resolve => setTimeout(resolve, 500)); // Simulate network delay
+    const normalizedEmail = email.trim().toLowerCase();
 
     // Check seed credentials
     const seedCreds: Record<string, string> = {
@@ -269,25 +274,70 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
     // Check stored credentials
     const storedAuth = JSON.parse(localStorage.getItem(STORAGE_KEYS.AUTH) || '{}');
+    const storedAuthPassword = Object.entries(storedAuth).find(
+      ([storedEmail]) => storedEmail.toLowerCase() === normalizedEmail
+    )?.[1];
     
-    if (seedCreds[email] === password || storedAuth[email] === password) {
-      const user = users.find(u => u.email === email);
+    const makeRoleMismatchMessage = (role: User['role']) => {
+      const article = role === 'admin' ? 'an' : 'a';
+      return `This account is not ${article} ${role} account.`;
+    };
+
+    if (seedCreds[normalizedEmail] === password || storedAuthPassword === password) {
+      const user = users.find(u => u.email.toLowerCase() === normalizedEmail);
       if (user) {
+        if (expectedRole && user.role !== expectedRole) {
+          return { success: false, message: makeRoleMismatchMessage(expectedRole) };
+        }
         setCurrentUser(user);
         localStorage.setItem('currentUser', JSON.stringify(user));
-        return true;
+        return { success: true };
       }
+
+      // Recover missing local user record for valid credentials.
+      const roleFromSeed = (normalizedEmail === 'admin@court.com' || normalizedEmail === 'junavirtudazo@gmail.com')
+        ? 'admin'
+        : normalizedEmail === 'staff@court.com'
+          ? 'staff'
+          : normalizedEmail === 'coach@court.com'
+            ? 'coach'
+            : 'player';
+
+      if (expectedRole && roleFromSeed !== expectedRole) {
+        return { success: false, message: makeRoleMismatchMessage(expectedRole) };
+      }
+
+      const recoveredUser: User = {
+        id: Math.random().toString(36).substr(2, 9),
+        email: normalizedEmail,
+        name: normalizedEmail.split('@')[0],
+        role: roleFromSeed,
+        avatar: '',
+        phone: '',
+        skillLevel: roleFromSeed === 'admin' ? 'expert' : 'beginner',
+        createdAt: new Date(),
+      };
+
+      const updatedUsers = [...users, recoveredUser];
+      setUsers(updatedUsers);
+      persist(STORAGE_KEYS.USERS, updatedUsers);
+      setCurrentUser(recoveredUser);
+      localStorage.setItem('currentUser', JSON.stringify(recoveredUser));
+      return { success: true };
     }
 
     // Fallback for dev user if not in users list yet
-    if (email === 'junavirtudazo@gmail.com') {
-      const devUser = { id: 'dev-1', email, name: 'Juna Virtudazo', role: 'admin', avatar: '', phone: '', skillLevel: 'expert', createdAt: new Date() };
+    if (normalizedEmail === 'junavirtudazo@gmail.com') {
+      const devUser = { id: 'dev-1', email: normalizedEmail, name: 'Juna Virtudazo', role: 'admin', avatar: '', phone: '', skillLevel: 'expert', createdAt: new Date() };
+      if (expectedRole && devUser.role !== expectedRole) {
+        return { success: false, message: makeRoleMismatchMessage(expectedRole) };
+      }
       setCurrentUser(devUser);
       localStorage.setItem('currentUser', JSON.stringify(devUser));
-      return true;
+      return { success: true };
     }
 
-    return false;
+    return { success: false, message: 'Invalid credentials. Please check your email and password.' };
   };
 
   const signup = async (email: string, password: string, role: string = 'player'): Promise<{ success: boolean; message?: string }> => {

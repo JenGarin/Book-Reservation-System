@@ -6,7 +6,7 @@ export function RoleSelection() {
   const navigate = useNavigate();
 
   const goToSignIn = (role: Role) => {
-    navigate('/sign-in', { state: { role } });
+    navigate(`/sign-in?role=${role}`, { state: { role } });
   };
 
   return (
@@ -18,7 +18,7 @@ export function RoleSelection() {
 
       <div className="bg-white rounded-xl shadow-xl w-full max-w-md p-8 relative z-10 border border-gray-200">
         <div className="text-center mb-8">
-          <img src="/ventra-logo.png" alt="Ventra" className="h-32 w-auto mx-auto mb-6" />
+          <img src="/ventra-logo.png" alt="Ventra" className="h-36 w-auto mx-auto mb-6" />
           <h1 className="text-3xl text-gray-900 mb-2">Log In As</h1>
           <p className="text-gray-600">Choose your account type to continue</p>
         </div>

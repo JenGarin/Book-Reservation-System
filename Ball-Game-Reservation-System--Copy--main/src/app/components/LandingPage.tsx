@@ -122,7 +122,7 @@ export function LandingPage() {
         <div className="max-w-7xl mx-auto px-6 flex items-center justify-between">
           <div className="flex items-center gap-4 md:gap-8">
             <div className="flex items-center gap-2 group cursor-pointer">
-              <img src="/ventra-logo.png" alt="Ventra" className="h-16 md:h-20 w-auto group-hover:scale-105 transition-transform" />
+              <img src="/ventra-logo.png" alt="Ventra" className="h-20 md:h-24 w-auto group-hover:scale-105 transition-transform" />
             </div>
             <div className="flex items-center gap-4">
               <Link to="/login" className="text-sm font-semibold text-slate-600 hover:text-teal-600 transition-colors">
@@ -309,9 +309,9 @@ export function LandingPage() {
         <div className="max-w-7xl mx-auto px-6 relative z-10">
           <div className="flex flex-col lg:flex-row items-center gap-16">
             <div className="flex-1 text-center lg:text-left max-w-2xl">
-              <div className="inline-flex items-center gap-2 px-4 py-2 rounded-full bg-teal-50 text-teal-600 text-xs font-bold uppercase tracking-wider mt-6 md:mt-8 mb-8 border border-teal-100 animate-in fade-in slide-in-from-bottom-4 duration-700">
-                <span className="w-2 h-2 rounded-full bg-teal-600 animate-pulse"></span>
-                The #1 Court Booking Platform
+              <div className="inline-flex items-center gap-2 px-5 py-2.5 rounded-full bg-white/75 backdrop-blur-sm text-teal-700 text-sm font-semibold tracking-wide mt-12 md:mt-14 mb-8 border border-teal-200 shadow-sm animate-in fade-in slide-in-from-bottom-4 duration-700">
+                <span className="w-2.5 h-2.5 rounded-full bg-teal-500"></span>
+                THE #1 COURT BOOKING PLATFORM
               </div>
               <h1 className="text-5xl md:text-7xl font-extrabold text-slate-900 leading-[1.1] mb-8 tracking-tight animate-in fade-in slide-in-from-bottom-8 duration-700 delay-100">
                 Book Your Perfect <br />
@@ -653,7 +653,7 @@ export function LandingPage() {
         <div className="max-w-7xl mx-auto px-6 grid md:grid-cols-4 gap-12">
           <div className="col-span-1 md:col-span-2">
             <div className="flex items-center gap-2 mb-6">
-              <img src="/ventra-logo.png" alt="Ventra" className="h-14 w-auto" />
+              <img src="/ventra-logo.png" alt="Ventra" className="h-16 w-auto" />
             </div>
             <p className="text-slate-400 mb-8 max-w-sm leading-relaxed">
               The ultimate platform for sports enthusiasts and facility owners. Book courts, manage teams, and organize tournaments with ease.

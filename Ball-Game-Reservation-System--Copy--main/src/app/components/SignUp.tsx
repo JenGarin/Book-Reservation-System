@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { useNavigate, Link } from 'react-router-dom';
+import { useNavigate, Link, useLocation } from 'react-router-dom';
 import { useApp } from '@/context/AppContext';
 import { UserPlus, Mail, Lock, User, Loader2, Eye, EyeOff } from 'lucide-react';
 import { toast } from 'sonner';
@@ -14,6 +14,8 @@ export function SignUp() {
 
   const { signup, signInWithProvider } = useApp();
   const navigate = useNavigate();
+  const location = useLocation();
+  const selectedRole = (new URLSearchParams(location.search).get('role') || 'player') as 'admin' | 'coach' | 'player';
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -26,11 +28,11 @@ export function SignUp() {
     setIsLoading(true);
 
     try {
-      const { success, message } = await signup(email, password, 'player');
+      const { success, message } = await signup(email, password, selectedRole);
       
       if (success) {
         toast.success('Account created successfully! Please sign in.');
-        navigate('/sign-in');
+        navigate(`/sign-in?role=${selectedRole}`, { state: { role: selectedRole } });
       } else {
         toast.error(message || 'Failed to create account');
       }
@@ -43,7 +45,7 @@ export function SignUp() {
 
   const handleSocialSignUp = async (provider: 'google' | 'facebook') => {
     setIsLoading(true);
-    const result = await signInWithProvider(provider, 'player');
+    const result = await signInWithProvider(provider, selectedRole);
     if (!result.success) {
       toast.error(result.message || 'Unable to continue with social sign-up.');
       setIsLoading(false);
@@ -60,7 +62,7 @@ export function SignUp() {
       <div className="absolute inset-0 bg-indigo-900/40 backdrop-blur-sm"></div>
       <div className="bg-white/95 backdrop-blur-xl rounded-2xl shadow-2xl w-full max-w-md p-6 md:p-7 relative z-10 border border-white/50 animate-in fade-in zoom-in-95 duration-500">
         <div className="text-center mb-5">
-          <img src="/ventra-logo.png" alt="Ventra" className="h-20 md:h-24 w-auto mx-auto mb-4" />
+          <img src="/ventra-logo.png" alt="Ventra" className="h-24 md:h-28 w-auto mx-auto mb-4" />
           <h1 className="text-2xl md:text-3xl text-slate-900 mb-1">Create Account</h1>
           <p className="text-gray-600">Join us to book your next game</p>
         </div>
@@ -176,7 +178,7 @@ export function SignUp() {
         <div className="mt-4 text-center">
           <p className="text-gray-600 text-sm">
             Already have an account?{' '}
-            <Link to="/sign-in" className="text-indigo-600 font-medium hover:underline">
+            <Link to={`/sign-in?role=${selectedRole}`} className="text-indigo-600 font-medium hover:underline">
               Sign In
             </Link>
           </p>

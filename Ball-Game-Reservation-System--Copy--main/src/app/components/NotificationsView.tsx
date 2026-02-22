@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { useApp } from '@/context/AppContext';
 import { Bell, CheckCircle, AlertTriangle, Info, XCircle } from 'lucide-react';
 import { format } from 'date-fns';
@@ -6,10 +6,12 @@ import { Notification } from '@/types';
 
 export function NotificationsView() {
   const { currentUser, notifications } = useApp();
+  const [viewMode, setViewMode] = useState<'recent' | 'all'>('recent');
   
   const myNotifications = notifications
     .filter((n: Notification) => n.userId === currentUser?.id)
     .sort((a: Notification, b: Notification) => b.createdAt.getTime() - a.createdAt.getTime());
+  const displayedNotifications = viewMode === 'recent' ? myNotifications.slice(0, 5) : myNotifications;
 
   const getIcon = (type: string) => {
     switch (type) {
@@ -43,8 +45,31 @@ export function NotificationsView() {
         </div>
       </div>
 
+      <div className="flex items-center gap-2">
+        <button
+          onClick={() => setViewMode('recent')}
+          className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-colors ${
+            viewMode === 'recent'
+              ? 'bg-teal-600 text-white'
+              : 'bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-300 border border-slate-200 dark:border-slate-700'
+          }`}
+        >
+          Recent
+        </button>
+        <button
+          onClick={() => setViewMode('all')}
+          className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-colors ${
+            viewMode === 'all'
+              ? 'bg-teal-600 text-white'
+              : 'bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-300 border border-slate-200 dark:border-slate-700'
+          }`}
+        >
+          View All Notifications
+        </button>
+      </div>
+
       <div className="space-y-4">
-        {myNotifications.length === 0 ? (
+        {displayedNotifications.length === 0 ? (
           <div className="text-center py-16 bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm">
             <div className="w-16 h-16 bg-slate-50 dark:bg-slate-800 rounded-full flex items-center justify-center mx-auto mb-4">
               <Bell className="w-8 h-8 text-slate-300 dark:text-slate-600" />
@@ -55,7 +80,7 @@ export function NotificationsView() {
             </p>
           </div>
         ) : (
-          myNotifications.map((notification: Notification) => (
+          displayedNotifications.map((notification: Notification) => (
             <div 
               key={notification.id} 
               className={`p-6 rounded-2xl border flex gap-4 transition-all hover:shadow-md ${getStyles(notification.type)}`}
