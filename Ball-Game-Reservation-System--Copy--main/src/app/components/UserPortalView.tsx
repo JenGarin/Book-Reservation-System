@@ -1,6 +1,6 @@
 import React from 'react';
 import { useApp } from '@/context/AppContext';
-import { useNavigate } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
 import {
   Calendar,
   CreditCard,
@@ -17,6 +17,7 @@ import { toast } from 'sonner';
 
 export function UserPortalView() {
   const { currentUser, notifications, userSubscription, memberships, bookings, courts } = useApp();
+  const location = useLocation();
   const navigate = useNavigate();
   const isAdmin = currentUser?.role === 'admin';
 
@@ -41,11 +42,6 @@ export function UserPortalView() {
 
   const nextCourt = nextBooking ? courts.find((c) => c.id === nextBooking.courtId) : null;
 
-  const recentBookings = bookings
-    .filter((b) => (isAdmin ? true : b.userId === currentUser?.id))
-    .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())
-    .slice(0, 5);
-
   const handleReschedule = () => {
     if (isAdmin) {
       navigate('/requests');
@@ -68,8 +64,12 @@ export function UserPortalView() {
           <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm">
             <div className="flex flex-col items-center text-center">
               <div className="relative">
-                <div className="w-24 h-24 rounded-full bg-teal-100 flex items-center justify-center text-3xl font-bold text-teal-700">
-                  {initials}
+                <div className="w-24 h-24 rounded-full bg-teal-100 flex items-center justify-center text-3xl font-bold text-teal-700 overflow-hidden">
+                  {currentUser?.avatar ? (
+                    <img src={currentUser.avatar} alt={displayName} className="w-full h-full object-cover" />
+                  ) : (
+                    initials
+                  )}
                 </div>
                 <div className="absolute bottom-0 right-0 p-1.5 bg-teal-600 rounded-full border-4 border-white text-white">
                   <Award size={14} />
@@ -178,12 +178,12 @@ export function UserPortalView() {
                 </div>
                 <h3 className="text-2xl font-bold text-slate-900">
                   {nextCourt?.name || 'Unknown Court'}
-                  {nextCourt?.type ? ` • ${nextCourt.type.charAt(0).toUpperCase()}${nextCourt.type.slice(1)}` : ''}
+                  {nextCourt?.type ? ` - ${nextCourt.type.charAt(0).toUpperCase()}${nextCourt.type.slice(1)}` : ''}
                 </h3>
                 <p className="text-slate-500 font-medium">{format(new Date(nextBooking.date), 'EEEE, MMM dd')} at {nextBooking.startTime}</p>
                 <div className="flex flex-wrap gap-4 mt-6 justify-center md:justify-start">
                   <button
-                    onClick={() => navigate('/check-in')}
+                    onClick={() => navigate('/check-in', { state: { from: `${location.pathname}${location.search}` } })}
                     className="px-6 py-2.5 bg-teal-600 text-white rounded-xl font-bold text-sm shadow-md hover:bg-teal-700 transition-colors"
                   >
                     Check-in Now
@@ -215,81 +215,8 @@ export function UserPortalView() {
             </div>
           )}
 
-          <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
-            <div className="p-6 border-b border-slate-100 flex items-center justify-between">
-              <h3 className="font-bold text-slate-900">{isAdmin ? 'Recent Booking Activity' : 'Recent Activity'}</h3>
-              <button
-                onClick={() => navigate(isAdmin ? '/requests' : '/my-bookings')}
-                className="text-sm font-bold text-teal-600 hover:text-teal-700 flex items-center gap-1"
-              >
-                View All <ChevronRight size={16} />
-              </button>
-            </div>
-            <div className="overflow-x-auto">
-              <table className="w-full text-left">
-                <thead>
-                  <tr className="bg-slate-50/50">
-                    <th className="p-4 text-xs font-bold text-slate-400 uppercase">Date</th>
-                    <th className="p-4 text-xs font-bold text-slate-400 uppercase">Court & Time</th>
-                    <th className="p-4 text-xs font-bold text-slate-400 uppercase">Type</th>
-                    <th className="p-4 text-xs font-bold text-slate-400 uppercase">Status</th>
-                    <th className="p-4 text-xs font-bold text-slate-400 uppercase">Amount</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-100">
-                  {recentBookings.length === 0 && (
-                    <tr>
-                      <td colSpan={5} className="p-8 text-center text-slate-500 text-sm">No booking history found.</td>
-                    </tr>
-                  )}
-                  {recentBookings.map((bk) => {
-                    const court = courts.find((c) => c.id === bk.courtId);
-                    return (
-                      <tr key={bk.id} className="hover:bg-slate-50/50 transition-colors">
-                        <td className="p-4">
-                          <span className="text-sm font-bold text-slate-600">{format(new Date(bk.date), 'MMM dd, yyyy')}</span>
-                        </td>
-                        <td className="p-4">
-                          <div>
-                            <p className="text-sm font-bold text-slate-900">{court?.name || 'Unknown'}</p>
-                            <p className="text-xs text-slate-500">{bk.startTime} - {bk.endTime}</p>
-                          </div>
-                        </td>
-                        <td className="p-4">
-                          <span className="text-xs font-medium text-slate-600 capitalize">{bk.type.replace('_', ' ')}</span>
-                        </td>
-                        <td className="p-4">
-                          <span
-                            className={cn(
-                              'px-2 py-1 rounded-full text-[10px] font-bold uppercase',
-                              bk.status === 'confirmed'
-                                ? 'bg-teal-50 text-teal-600'
-                                : bk.status === 'completed'
-                                  ? 'bg-emerald-50 text-emerald-600'
-                                  : bk.status === 'cancelled'
-                                    ? 'bg-rose-50 text-rose-600'
-                                    : 'bg-slate-100 text-slate-600'
-                            )}
-                          >
-                            {bk.status}
-                          </span>
-                        </td>
-                        <td className="p-4">
-                          <span className="text-sm font-bold text-slate-900">PHP {bk.amount}</span>
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-          </div>
         </div>
       </div>
     </div>
   );
-}
-
-function cn(...inputs: Array<string | false | null | undefined>) {
-  return inputs.filter(Boolean).join(' ');
 }

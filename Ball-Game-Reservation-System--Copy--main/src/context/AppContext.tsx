@@ -24,6 +24,13 @@ export interface UserSubscription {
   created_at?: string;
 }
 
+type SignupPayload = {
+  name?: string;
+  phone?: string;
+  coachProfile?: string;
+  coachExpertise?: string[];
+};
+
 interface AppContextType {
   currentUser: User | null;
   users: User[];
@@ -35,7 +42,7 @@ interface AppContextType {
   subscriptionHistory: UserSubscription[];
   notifications: Notification[];
   login: (email: string, password: string, expectedRole?: User['role']) => Promise<{ success: boolean; message?: string }>;
-  signup: (email: string, password: string, role?: string) => Promise<{ success: boolean; message?: string }>;
+  signup: (email: string, password: string, role?: string, payload?: SignupPayload) => Promise<{ success: boolean; message?: string }>;
   signInWithProvider: (provider: 'google' | 'facebook', role?: string) => Promise<{ success: boolean; message?: string }>;
   logout: () => void;
   addCourt: (court: Omit<Court, 'id'>) => Promise<void>;
@@ -80,14 +87,29 @@ const STORAGE_KEYS = {
 const SEED_USERS: User[] = [
   { id: 'admin-1', email: 'admin@court.com', name: 'Admin User', role: 'admin', avatar: '', phone: '123-456-7890', skillLevel: 'expert', createdAt: new Date() },
   { id: 'staff-1', email: 'staff@court.com', name: 'Staff Member', role: 'staff', avatar: '', phone: '123-456-7890', skillLevel: 'advanced', createdAt: new Date() },
-  { id: 'coach-1', email: 'coach@court.com', name: 'Coach Mike', role: 'coach', avatar: '', phone: '123-456-7890', skillLevel: 'expert', createdAt: new Date() },
+  {
+    id: 'coach-1',
+    email: 'coach@court.com',
+    name: 'Coach Mike',
+    role: 'coach',
+    avatar: '',
+    phone: '123-456-7890',
+    skillLevel: 'expert',
+    coachVerificationStatus: 'verified',
+    coachVerificationMethod: 'certification',
+    coachVerificationDocumentName: 'National Coaching Certification',
+    coachVerificationId: 'NCC-1024',
+    coachVerificationNotes: 'Validated by club management.',
+    coachVerificationSubmittedAt: new Date().toISOString(),
+    createdAt: new Date()
+  },
   { id: 'player-1', email: 'player@court.com', name: 'Alex Johnson', role: 'player', avatar: '', phone: '123-456-7890', skillLevel: 'intermediate', createdAt: new Date() },
 ];
 
 const SEED_COURTS: Court[] = [
-  { id: 'c1', name: 'Center Court', courtNumber: '1', type: 'indoor', surfaceType: 'hardcourt', hourlyRate: 500, peakHourRate: 700, status: 'active', operatingHours: { start: '06:00', end: '22:00' } },
-  { id: 'c2', name: 'East Wing', courtNumber: '2', type: 'indoor', surfaceType: 'wood', hourlyRate: 500, peakHourRate: 700, status: 'active', operatingHours: { start: '06:00', end: '22:00' } },
-  { id: 'c3', name: 'Outdoor 1', courtNumber: '3', type: 'outdoor', surfaceType: 'concrete', hourlyRate: 300, peakHourRate: 450, status: 'active', operatingHours: { start: '06:00', end: '18:00' } },
+  { id: 'c1', name: 'Downtown Basketball Court A', courtNumber: '1', type: 'indoor', surfaceType: 'hardcourt', hourlyRate: 500, peakHourRate: 700, status: 'active', operatingHours: { start: '06:00', end: '22:00' } },
+  { id: 'c2', name: 'Riverside Tennis Court 1', courtNumber: '2', type: 'indoor', surfaceType: 'wood', hourlyRate: 500, peakHourRate: 700, status: 'active', operatingHours: { start: '06:00', end: '22:00' } },
+  { id: 'c3', name: 'Pickle Ball Court 1', courtNumber: '3', type: 'outdoor', surfaceType: 'concrete', hourlyRate: 300, peakHourRate: 450, status: 'active', operatingHours: { start: '06:00', end: '18:00' } },
 ];
 
 const SEED_MEMBERSHIPS: MembershipPlan[] = [
@@ -146,6 +168,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       avatar: '',
       phone: '',
       skillLevel: 'beginner',
+      coachVerificationStatus: role === 'coach' ? 'unverified' : undefined,
       createdAt: new Date(),
     };
 
@@ -175,7 +198,15 @@ export function AppProvider({ children }: { children: ReactNode }) {
       // Courts
       const storedCourts = localStorage.getItem(STORAGE_KEYS.COURTS);
       if (storedCourts) {
-        setCourts(JSON.parse(storedCourts));
+        const parsedCourts = JSON.parse(storedCourts);
+        const normalizedCourts = parsedCourts.map((court: Court) => {
+          if (court.id === 'c1') return { ...court, name: 'Downtown Basketball Court A' };
+          if (court.id === 'c2') return { ...court, name: 'Riverside Tennis Court 1' };
+          if (court.id === 'c3') return { ...court, name: 'Pickle Ball Court 1' };
+          return court;
+        });
+        setCourts(normalizedCourts);
+        localStorage.setItem(STORAGE_KEYS.COURTS, JSON.stringify(normalizedCourts));
       } else {
         setCourts(SEED_COURTS);
         localStorage.setItem(STORAGE_KEYS.COURTS, JSON.stringify(SEED_COURTS));
@@ -315,6 +346,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         avatar: '',
         phone: '',
         skillLevel: roleFromSeed === 'admin' ? 'expert' : 'beginner',
+        coachVerificationStatus: roleFromSeed === 'coach' ? 'unverified' : undefined,
         createdAt: new Date(),
       };
 
@@ -340,7 +372,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
     return { success: false, message: 'Invalid credentials. Please check your email and password.' };
   };
 
-  const signup = async (email: string, password: string, role: string = 'player'): Promise<{ success: boolean; message?: string }> => {
+  const signup = async (
+    email: string,
+    password: string,
+    role: string = 'player',
+    payload: SignupPayload = {}
+  ): Promise<{ success: boolean; message?: string }> => {
     try {
       await new Promise(resolve => setTimeout(resolve, 800));
       
@@ -351,11 +388,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
       const newUser: User = {
         id: Math.random().toString(36).substr(2, 9),
         email,
-        name: email.split('@')[0],
+        name: payload.name?.trim() || email.split('@')[0],
         role: role as any,
         avatar: '',
-        phone: '',
+        phone: payload.phone?.trim() || '',
         skillLevel: 'beginner',
+        coachProfile: role === 'coach' ? payload.coachProfile?.trim() || '' : undefined,
+        coachExpertise: role === 'coach' ? (payload.coachExpertise || []).filter(Boolean) : undefined,
+        coachVerificationStatus: role === 'coach' ? 'unverified' : undefined,
         createdAt: new Date()
       };
 
@@ -428,7 +468,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     await new Promise(resolve => setTimeout(resolve, 500));
     const bookingData = {
       ...booking,
-      status: 'pending',
+      status: booking.status || 'pending',
       id: Math.random().toString(36).substr(2, 9),
       createdAt: new Date().toISOString(),
       // Ensure date is stored as ISO string
@@ -685,11 +725,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
     if (!currentUser) return;
     
     const updatedUser = { ...currentUser, ...updates };
+    const updatedUsers = users.map(u => u.id === currentUser.id ? updatedUser : u);
     setCurrentUser(updatedUser);
-    setUsers(users.map(u => u.id === currentUser.id ? updatedUser : u));
+    setUsers(updatedUsers);
     
     // Persist to local storage so it survives refresh
     localStorage.setItem('currentUser', JSON.stringify(updatedUser));
+    persist(STORAGE_KEYS.USERS, updatedUsers);
   };
 
   const adminUpdateUser = async (id: string, updates: Partial<User>) => {

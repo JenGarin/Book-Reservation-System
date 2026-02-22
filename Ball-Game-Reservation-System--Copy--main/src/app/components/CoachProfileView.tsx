@@ -1,7 +1,7 @@
 import { useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useApp } from '@/context/AppContext';
-import { CalendarDays, Clock3, Mail, Phone, UserCircle2, Award, Users, ClipboardList } from 'lucide-react';
+import { CalendarDays, Clock3, Mail, Phone, UserCircle2, Award, Users, ClipboardList, BadgeCheck } from 'lucide-react';
 import { format, startOfToday } from 'date-fns';
 
 export function CoachProfileView() {
@@ -40,12 +40,30 @@ export function CoachProfileView() {
           <section className="bg-white rounded-2xl border border-slate-200 p-6 shadow-sm">
             <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
               <div className="flex items-start gap-4">
-                <div className="w-16 h-16 rounded-full bg-teal-100 text-teal-700 flex items-center justify-center">
-                  <UserCircle2 className="w-10 h-10" />
+                <div className="w-16 h-16 rounded-full bg-teal-100 text-teal-700 flex items-center justify-center overflow-hidden border border-teal-200">
+                  {currentUser?.avatar ? (
+                    <img src={currentUser.avatar} alt={currentUser.name || 'Coach'} className="w-full h-full object-cover" />
+                  ) : (
+                    <UserCircle2 className="w-10 h-10" />
+                  )}
                 </div>
                 <div>
                   <h2 className="text-2xl font-semibold text-slate-900">{currentUser?.name || 'Coach Profile'}</h2>
                   <p className="text-slate-500 capitalize">Role: {currentUser?.role || 'coach'}</p>
+                  <div className="mt-2">
+                    <span
+                      className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold uppercase ${
+                        currentUser?.coachVerificationStatus === 'verified'
+                          ? 'bg-emerald-100 text-emerald-700'
+                          : currentUser?.coachVerificationStatus === 'pending'
+                            ? 'bg-amber-100 text-amber-700'
+                            : 'bg-slate-200 text-slate-700'
+                      }`}
+                    >
+                      <BadgeCheck className="w-3.5 h-3.5" />
+                      {currentUser?.coachVerificationStatus || 'unverified'}
+                    </span>
+                  </div>
                   <div className="mt-3 flex flex-wrap gap-4 text-sm text-slate-600">
                     <span className="inline-flex items-center gap-1.5">
                       <Mail className="w-4 h-4" />
@@ -60,6 +78,11 @@ export function CoachProfileView() {
                       {currentUser?.skillLevel || 'intermediate'}
                     </span>
                   </div>
+                  {(currentUser?.coachVerificationMethod || currentUser?.coachVerificationId) && (
+                    <p className="text-xs text-slate-500 mt-2">
+                      Verification: {currentUser?.coachVerificationMethod || 'credential'}{currentUser?.coachVerificationId ? ` (${currentUser.coachVerificationId})` : ''}
+                    </p>
+                  )}
                 </div>
               </div>
               <button

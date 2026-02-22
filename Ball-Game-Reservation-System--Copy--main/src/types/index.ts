@@ -8,6 +8,14 @@ export interface User {
   phone: string;
   role: UserRole;
   skillLevel?: 'beginner' | 'intermediate' | 'advanced' | 'expert';
+  coachProfile?: string;
+  coachExpertise?: string[];
+  coachVerificationStatus?: 'unverified' | 'pending' | 'verified';
+  coachVerificationMethod?: 'certification' | 'license' | 'experience' | 'other';
+  coachVerificationDocumentName?: string;
+  coachVerificationId?: string;
+  coachVerificationNotes?: string;
+  coachVerificationSubmittedAt?: string;
   avatar?: string;
   membershipId?: string;
   createdAt: Date;

@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react';
 import { MapPin, CalendarDays, Search, ChevronDown } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
+import { useApp } from '@/context/AppContext';
 
 type CourtStatus = 'Available' | 'Limited' | 'Few Slots';
 
@@ -23,7 +24,7 @@ const COURTS: CourtCardData[] = [
     name: 'Downtown Basketball Court A',
     location: 'Downtown Sports Complex',
     sport: 'Basketball',
-    price: '₱30/hour',
+    price: 'PHP 30/hour',
     status: 'Available',
     image: '/basketball.png',
     tags: ['indoor', 'air conditioning', 'lighting', 'scoreboard'],
@@ -34,7 +35,7 @@ const COURTS: CourtCardData[] = [
     name: 'Riverside Tennis Court 1',
     location: 'Riverside Park',
     sport: 'Tennis',
-    price: '₱25/hour',
+    price: 'PHP 25/hour',
     status: 'Limited',
     image: '/tennis.png',
     tags: ['outdoor', 'lighting', 'net included', 'hard court'],
@@ -45,7 +46,7 @@ const COURTS: CourtCardData[] = [
     name: 'Pickle Ball Court 1',
     location: 'Elite Sports Hub',
     sport: 'Pickle Ball',
-    price: '₱25/hour',
+    price: 'PHP 25/hour',
     status: 'Few Slots',
     image: '/pickle%20ball.png',
     tags: ['indoor', 'hard court', 'lighting', 'net included'],
@@ -60,8 +61,13 @@ const statusStyles: Record<CourtStatus, string> = {
 
 export function DashboardDesign() {
   const navigate = useNavigate();
+  const { courts } = useApp();
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedSport, setSelectedSport] = useState('All Sports');
+
+  const getCourtName = (courtId: string, fallbackName: string) => {
+    return courts.find((court) => court.id === courtId)?.name || fallbackName;
+  };
 
   const sportOptions = useMemo(
     () => ['All Sports', ...Array.from(new Set(COURTS.map((court) => court.sport)))],
@@ -75,14 +81,14 @@ export function DashboardDesign() {
       const matchesSport = selectedSport === 'All Sports' || court.sport === selectedSport;
       const matchesSearch =
         normalizedSearch.length === 0 ||
-        court.name.toLowerCase().includes(normalizedSearch) ||
+        getCourtName(court.courtId, court.name).toLowerCase().includes(normalizedSearch) ||
         court.location.toLowerCase().includes(normalizedSearch) ||
         court.sport.toLowerCase().includes(normalizedSearch) ||
         court.tags.some((tag) => tag.toLowerCase().includes(normalizedSearch));
 
       return matchesSport && matchesSearch;
     });
-  }, [searchTerm, selectedSport]);
+  }, [searchTerm, selectedSport, courts]);
 
   return (
     <div className="min-h-screen bg-[#dce7e8] rounded-xl p-6 md:p-8 space-y-6">
@@ -126,7 +132,7 @@ export function DashboardDesign() {
 
             <div className="p-6 flex-1 flex flex-col">
               <div className="min-h-[100px]">
-                <h3 className="text-2xl font-bold text-slate-900 leading-tight">{court.name}</h3>
+                <h3 className="text-2xl font-bold text-slate-900 leading-tight">{getCourtName(court.courtId, court.name)}</h3>
                 <p className="text-slate-700 mt-2 flex items-center gap-2 text-xl">
                   <MapPin className="w-5 h-5" />
                   {court.location}

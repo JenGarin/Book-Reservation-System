@@ -18,6 +18,14 @@ import {
 import { ImageWithFallback } from '@/app/components/figma/ImageWithFallback';
 import { Court } from '@/types';
 
+function getCourtImage(name: string) {
+  const text = name.toLowerCase();
+  if (text.includes('basket')) return '/basketball.png';
+  if (text.includes('tennis')) return '/tennis.png';
+  if (text.includes('pickle')) return '/pickle%20ball.png';
+  return '/tennis.png';
+}
+
 export function CourtManagementView() {
   const { courts, addCourt, updateCourt, deleteCourt, bookings, users } = useApp();
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -26,16 +34,20 @@ export function CourtManagementView() {
   const [formData, setFormData] = useState<{
     name: string;
     courtNumber: string;
-    type: string;
-    surfaceType: string;
-    status: string;
+    type: 'indoor' | 'outdoor';
+    surfaceType: 'hardcourt' | 'clay' | 'grass' | 'synthetic';
+    status: 'active' | 'maintenance' | 'disabled';
+    hourlyRate: number;
+    peakHourRate: number;
     operatingHours: { start: string; end: string };
   }>({
     name: '',
     courtNumber: '',
-    type: 'Indoor',
-    surfaceType: 'Hard',
-    status: 'Active',
+    type: 'indoor',
+    surfaceType: 'hardcourt',
+    status: 'active',
+    hourlyRate: 500,
+    peakHourRate: 700,
     operatingHours: { start: '06:00', end: '22:00' }
   });
 
@@ -43,9 +55,11 @@ export function CourtManagementView() {
     setFormData({
       name: '',
       courtNumber: '',
-      type: 'Indoor',
-      surfaceType: 'Hard',
-      status: 'Active',
+      type: 'indoor',
+      surfaceType: 'hardcourt',
+      status: 'active',
+      hourlyRate: 500,
+      peakHourRate: 700,
       operatingHours: { start: '06:00', end: '22:00' }
     });
     setEditingId(null);
@@ -57,9 +71,11 @@ export function CourtManagementView() {
     setFormData({
       name: court.name,
       courtNumber: court.courtNumber,
-      type: court.type.charAt(0).toUpperCase() + court.type.slice(1),
-      surfaceType: court.surfaceType.charAt(0).toUpperCase() + court.surfaceType.slice(1),
-      status: court.status.charAt(0).toUpperCase() + court.status.slice(1),
+      type: court.type as 'indoor' | 'outdoor',
+      surfaceType: court.surfaceType as 'hardcourt' | 'clay' | 'grass' | 'synthetic',
+      status: court.status as 'active' | 'maintenance' | 'disabled',
+      hourlyRate: Number(court.hourlyRate) || 500,
+      peakHourRate: Number(court.peakHourRate || court.hourlyRate) || 700,
       operatingHours: court.operatingHours || { start: '06:00', end: '22:00' }
     });
     setIsModalOpen(true);
@@ -82,11 +98,11 @@ export function CourtManagementView() {
       const courtData = {
         name: formData.name,
         courtNumber: formData.courtNumber,
-        type: formData.type.toLowerCase(),
-        surfaceType: formData.surfaceType.toLowerCase(),
-        status: formData.status.toLowerCase(),
-        hourlyRate: 500,
-        peakHourRate: 700,
+        type: formData.type,
+        surfaceType: formData.surfaceType,
+        status: formData.status,
+        hourlyRate: Number(formData.hourlyRate),
+        peakHourRate: Number(formData.peakHourRate),
         operatingHours: formData.operatingHours
       };
 
@@ -100,6 +116,16 @@ export function CourtManagementView() {
       resetForm();
     } catch (error) {
       toast.error(editingId ? 'Failed to update court' : 'Failed to add court');
+    }
+  };
+
+  const handleToggleActive = async (court: Court) => {
+    const nextStatus = court.status === 'active' ? 'maintenance' : 'active';
+    try {
+      await updateCourt(court.id, { status: nextStatus });
+      toast.success(`Court set to ${nextStatus}.`);
+    } catch {
+      toast.error('Failed to update court status.');
     }
   };
 
@@ -124,18 +150,20 @@ export function CourtManagementView() {
           <div key={court.id} className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 overflow-hidden group shadow-sm hover:shadow-md transition-all">
             <div className="relative h-48">
               <ImageWithFallback 
-                src={court.type === 'indoor' ? "https://images.unsplash.com/photo-1542144582-1ba00456b5e3?q=80&w=400" : "https://images.unsplash.com/photo-1695950695168-f4038b55a9ca?q=80&w=400"} 
+                src={getCourtImage(court.name)}
                 alt={court.name}
                 className="w-full h-full object-cover"
               />
               <div className="absolute top-4 right-4 flex gap-2">
                 <button 
+                  type="button"
                   onClick={() => handleEdit(court)}
                   className="p-2 bg-white/90 backdrop-blur rounded-lg text-slate-700 hover:bg-white transition-colors"
                 >
                   <Edit2 size={16} />
                 </button>
                 <button 
+                  type="button"
                   onClick={() => handleDelete(court.id)}
                   className="p-2 bg-white/90 backdrop-blur rounded-lg text-rose-600 hover:bg-rose-50 transition-colors"
                 >
@@ -162,9 +190,19 @@ export function CourtManagementView() {
                   </div>
                 </div>
                 <div className="flex items-center gap-2">
-                  <span className="text-sm font-medium text-slate-600 dark:text-slate-400">Active</span>
-                  <button className="relative inline-flex h-6 w-11 items-center rounded-full bg-teal-600">
-                    <span className="inline-block h-4 w-4 transform rounded-full bg-white translate-x-6 transition" />
+                  <span className="text-sm font-medium text-slate-600 dark:text-slate-400 capitalize">{court.status}</span>
+                  <button
+                    type="button"
+                    onClick={() => handleToggleActive(court)}
+                    className={cn(
+                      "relative inline-flex h-6 w-11 items-center rounded-full transition-colors",
+                      court.status === 'active' ? "bg-teal-600" : "bg-slate-400"
+                    )}
+                  >
+                    <span className={cn(
+                      "inline-block h-4 w-4 transform rounded-full bg-white transition",
+                      court.status === 'active' ? "translate-x-6" : "translate-x-1"
+                    )} />
                   </button>
                 </div>
               </div>
@@ -192,6 +230,7 @@ export function CourtManagementView() {
                   <span className="text-xs font-bold">Maintenance Clean</span>
                 </div>
                 <button 
+                  type="button"
                   onClick={() => setViewingScheduleId(court.id)}
                   className="text-sm font-bold text-teal-600 dark:text-teal-400 hover:text-teal-700 dark:hover:text-teal-300"
                 >
@@ -254,24 +293,24 @@ export function CourtManagementView() {
                   <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">Type</label>
                   <select 
                     value={formData.type}
-                    onChange={e => setFormData({...formData, type: e.target.value})}
+                    onChange={e => setFormData({...formData, type: e.target.value as 'indoor' | 'outdoor'})}
                     className="w-full px-4 py-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white focus:ring-2 focus:ring-teal-500 outline-none"
                   >
-                    <option>Indoor</option>
-                    <option>Outdoor</option>
+                    <option value="indoor">Indoor</option>
+                    <option value="outdoor">Outdoor</option>
                   </select>
                 </div>
                 <div>
                   <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">Surface</label>
                   <select 
                     value={formData.surfaceType}
-                    onChange={e => setFormData({...formData, surfaceType: e.target.value})}
+                    onChange={e => setFormData({...formData, surfaceType: e.target.value as 'hardcourt' | 'clay' | 'grass' | 'synthetic'})}
                     className="w-full px-4 py-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white focus:ring-2 focus:ring-teal-500 outline-none"
                   >
-                    <option>Hard</option>
-                    <option>Clay</option>
-                    <option>Grass</option>
-                    <option>Synthetic</option>
+                    <option value="hardcourt">Hardcourt</option>
+                    <option value="clay">Clay</option>
+                    <option value="grass">Grass</option>
+                    <option value="synthetic">Synthetic</option>
                   </select>
                 </div>
               </div>
@@ -279,13 +318,35 @@ export function CourtManagementView() {
                 <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">Status</label>
                 <select 
                   value={formData.status}
-                  onChange={e => setFormData({...formData, status: e.target.value})}
+                  onChange={e => setFormData({...formData, status: e.target.value as 'active' | 'maintenance' | 'disabled'})}
                   className="w-full px-4 py-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white focus:ring-2 focus:ring-teal-500 outline-none"
                 >
-                  <option>Active</option>
-                  <option>Maintenance</option>
-                  <option>Closed</option>
+                  <option value="active">Active</option>
+                  <option value="maintenance">Maintenance</option>
+                  <option value="disabled">Disabled</option>
                 </select>
+              </div>
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">Hourly Rate</label>
+                  <input
+                    type="number"
+                    min={0}
+                    value={formData.hourlyRate}
+                    onChange={e => setFormData({...formData, hourlyRate: Number(e.target.value)})}
+                    className="w-full px-4 py-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white focus:ring-2 focus:ring-teal-500 outline-none"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">Peak Rate</label>
+                  <input
+                    type="number"
+                    min={0}
+                    value={formData.peakHourRate}
+                    onChange={e => setFormData({...formData, peakHourRate: Number(e.target.value)})}
+                    className="w-full px-4 py-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white focus:ring-2 focus:ring-teal-500 outline-none"
+                  />
+                </div>
               </div>
               <div className="flex justify-end pt-4 gap-3">
                 <button 

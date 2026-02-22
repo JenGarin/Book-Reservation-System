@@ -13,14 +13,10 @@ import {
   Trash2,
   Calendar,
   UserRound,
+  UserCheck,
 } from 'lucide-react';
-import { format, startOfToday } from 'date-fns';
-
-const COURT_DISPLAY_NAMES: Record<string, string> = {
-  c1: 'Downtown Basketball Court A',
-  c2: 'Riverside Tennis Court 1',
-  c3: 'Pickle Ball Court 1',
-};
+import { format, isSameDay, startOfToday } from 'date-fns';
+import { toast } from 'sonner';
 
 const COURT_META: Record<string, { location: string; sport: string; image: string }> = {
   c1: { location: 'Downtown Sports Complex', sport: 'Basketball', image: '/basketball%20coach.png' },
@@ -28,18 +24,77 @@ const COURT_META: Record<string, { location: string; sport: string; image: strin
   c3: { location: 'Elite Sports Hub', sport: 'Pickle Ball', image: '/pickle%20ball.png' },
 };
 
+function toMinutes(time: string): number {
+  const [hours, minutes] = time.split(':').map(Number);
+  return hours * 60 + minutes;
+}
+
+function hasTimeOverlap(
+  startA: string,
+  endA: string,
+  startB: string,
+  endB: string
+): boolean {
+  const aStart = toMinutes(startA);
+  const aEnd = toMinutes(endA);
+  const bStart = toMinutes(startB);
+  const bEnd = toMinutes(endB);
+  return aStart < bEnd && bStart < aEnd;
+}
+
 export function CoachPortalView() {
-  const { currentUser, bookings, users } = useApp();
+  const { currentUser, bookings, users, courts, confirmBooking, cancelBooking } = useApp();
   const navigate = useNavigate();
-  const [activeTab, setActiveTab] = useState<'sessions' | 'students' | 'schedule'>('students');
+  const [activeTab, setActiveTab] = useState<'sessions' | 'students' | 'schedule'>('sessions');
 
   const coachSessions = useMemo(
     () =>
       bookings
-        .filter((b) => b.userId === currentUser?.id && b.type === 'training' && b.status !== 'cancelled')
+        .filter(
+          (b) =>
+            b.type === 'training' &&
+            (b.userId === currentUser?.id || b.coachId === currentUser?.id) &&
+            b.status !== 'cancelled' &&
+            b.status !== 'pending'
+        )
         .sort((a, b) => a.date.getTime() - b.date.getTime()),
     [bookings, currentUser]
   );
+
+  const getSessionStudentIds = (session: (typeof coachSessions)[number]) => {
+    const playerIds = new Set<string>(session.players || []);
+    const bookingOwner = users.find((u) => u.id === session.userId);
+    const ownerIsPlayer = bookingOwner?.role === 'player';
+
+    // For coach-created sessions, include approved player requests for the same timeslot.
+    if (session.userId === currentUser?.id) {
+      const matchedRequests = bookings.filter(
+        (b) =>
+          b.id !== session.id &&
+          b.type === 'training' &&
+          b.coachId === currentUser?.id &&
+          b.status !== 'pending' &&
+          b.status !== 'cancelled' &&
+          b.courtId === session.courtId &&
+          isSameDay(b.date, session.date) &&
+          hasTimeOverlap(session.startTime, session.endTime, b.startTime, b.endTime)
+      );
+
+      matchedRequests.forEach((request) => {
+        const requestUser = users.find((u) => u.id === request.userId);
+        if (requestUser?.role === 'player') {
+          playerIds.add(request.userId);
+        }
+      });
+    }
+
+    // Fallback for older/manual records where players[] is empty but booking owner is the player.
+    if (playerIds.size === 0 && ownerIsPlayer) {
+      playerIds.add(session.userId);
+    }
+
+    return Array.from(playerIds);
+  };
 
   const today = startOfToday();
   const upcomingSessions = coachSessions.filter((s) => s.date >= today);
@@ -47,12 +102,23 @@ export function CoachPortalView() {
 
   const totalStudents = useMemo(() => {
     const allStudentIds = new Set<string>();
-    coachSessions.forEach((s) => (s.players || []).forEach((id) => allStudentIds.add(id)));
+    coachSessions.forEach((s) => getSessionStudentIds(s).forEach((id) => allStudentIds.add(id)));
     return allStudentIds.size;
-  }, [coachSessions]);
+  }, [coachSessions, users]);
 
   const totalEarnings = coachSessions.reduce((sum, s) => sum + (s.amount || 0), 0);
-  const completionRate = coachSessions.length > 0 ? Math.round((completedSessions.length / coachSessions.length) * 100) : 0;
+  const pendingApplications = useMemo(
+    () =>
+      bookings
+        .filter(
+          (b) =>
+            b.coachId === currentUser?.id &&
+            b.type === 'training' &&
+            b.status === 'pending'
+        )
+        .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime()),
+    [bookings, currentUser]
+  );
 
   const sessionCards = upcomingSessions.slice(0, 4);
   const studentCards = useMemo(() => {
@@ -72,7 +138,7 @@ export function CoachPortalView() {
 
     coachSessions.forEach((session) => {
       const sport = COURT_META[session.courtId]?.sport || 'Training';
-      (session.players || []).forEach((playerId) => {
+      getSessionStudentIds(session).forEach((playerId) => {
         const student = users.find((u) => u.id === playerId);
         if (!student) return;
 
@@ -107,6 +173,24 @@ export function CoachPortalView() {
   }, [coachSessions, users]);
 
   const scheduleCards = upcomingSessions.slice(0, 8);
+
+  const handleApproveApplication = async (bookingId: string) => {
+    try {
+      await confirmBooking(bookingId);
+      toast.success('Application approved.');
+    } catch {
+      toast.error('Failed to approve application.');
+    }
+  };
+
+  const handleDeclineApplication = async (bookingId: string) => {
+    try {
+      await cancelBooking(bookingId);
+      toast.success('Application declined.');
+    } catch {
+      toast.error('Failed to decline application.');
+    }
+  };
 
   return (
     <div className="min-h-screen bg-[#dce9ea] rounded-2xl p-4 md:p-6 xl:p-8 space-y-5">
@@ -150,12 +234,64 @@ export function CoachPortalView() {
 
         <article className="rounded-2xl bg-[#ecdcc5] border border-slate-300/60 p-4 md:p-5 shadow-sm min-h-[150px]">
           <div className="flex items-center justify-between">
-            <h3 className="text-lg md:text-xl font-semibold text-slate-900">Completion Rate</h3>
+            <h3 className="text-lg md:text-xl font-semibold text-slate-900">Coach Applications</h3>
             <BarChart3 className="w-5 h-5 md:w-6 md:h-6 text-slate-700" />
           </div>
-          <p className="text-3xl md:text-4xl font-bold text-slate-900 mt-6">{completionRate}%</p>
-          <p className="text-slate-700 text-sm md:text-base">Sessions completed</p>
+          <p className="text-3xl md:text-4xl font-bold text-slate-900 mt-6">{pendingApplications.length}</p>
+          <p className="text-slate-700 text-sm md:text-base">Pending player requests</p>
         </article>
+      </section>
+
+      <section className="mx-auto max-w-[1320px] rounded-2xl border border-slate-300 bg-white p-5 md:p-6 shadow-sm">
+        <div className="flex items-center justify-between gap-3 mb-4">
+          <h2 className="text-2xl md:text-3xl font-semibold text-slate-900">Player Applications</h2>
+          <span className="px-3 py-1 rounded-xl bg-amber-100 text-amber-800 text-sm font-semibold">
+            {pendingApplications.length} pending
+          </span>
+        </div>
+
+        <div className="space-y-3">
+          {pendingApplications.length === 0 && (
+            <p className="text-slate-600 text-base">No pending applications from players.</p>
+          )}
+
+          {pendingApplications.slice(0, 6).map((application) => {
+            const player = users.find((u) => u.id === application.userId);
+            const court = courts.find((c) => c.id === application.courtId);
+            return (
+              <article
+                key={application.id}
+                className="rounded-xl border border-slate-200 bg-slate-50 p-4 flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4"
+              >
+                <div>
+                  <p className="text-lg font-semibold text-slate-900">{player?.name || 'Player'}</p>
+                  <p className="text-sm text-slate-600">{player?.email || 'No email available'}</p>
+                  <p className="text-sm text-slate-700 mt-2">
+                    {format(application.date, 'EEE, MMM dd yyyy')} · {application.startTime}-{application.endTime}
+                  </p>
+                  <p className="text-sm text-slate-700">{court?.name || 'Court'}</p>
+                  {application.notes && (
+                    <p className="text-sm text-slate-600 mt-1">Notes: {application.notes}</p>
+                  )}
+                </div>
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => handleDeclineApplication(application.id)}
+                    className="px-3 py-2 rounded-xl bg-rose-100 text-rose-700 text-sm font-semibold hover:bg-rose-200"
+                  >
+                    Decline
+                  </button>
+                  <button
+                    onClick={() => handleApproveApplication(application.id)}
+                    className="px-3 py-2 rounded-xl bg-emerald-100 text-emerald-700 text-sm font-semibold hover:bg-emerald-200"
+                  >
+                    Approve
+                  </button>
+                </div>
+              </article>
+            );
+          })}
+        </div>
       </section>
 
       <section className="mx-auto max-w-[1320px] flex flex-wrap items-center justify-between gap-3">
@@ -212,7 +348,7 @@ export function CoachPortalView() {
               sport: 'Training',
               image: '/tennis.png',
             };
-            const courtName = COURT_DISPLAY_NAMES[session.courtId] || 'Training Court';
+            const courtName = courts.find((c) => c.id === session.courtId)?.name || 'Training Court';
 
             return (
               <article key={session.id} className="rounded-2xl border border-slate-300 bg-white overflow-hidden shadow-sm">
@@ -231,18 +367,27 @@ export function CoachPortalView() {
 
                   <div className="grid grid-cols-3 gap-3">
                     <div className="rounded-xl bg-slate-50 border border-slate-200 p-3">
-                      <p className="text-slate-500 text-xs uppercase">Date</p>
+                      <p className="text-slate-500 text-xs uppercase inline-flex items-center gap-1">
+                        <Calendar className="w-3.5 h-3.5" />
+                        Date
+                      </p>
                       <p className="text-slate-900 text-base md:text-lg font-semibold mt-1">{format(session.date, 'MMM dd')}</p>
                       <p className="text-slate-700 text-sm">{format(session.date, 'yyyy')}</p>
                     </div>
                     <div className="rounded-xl bg-slate-50 border border-slate-200 p-3">
-                      <p className="text-slate-500 text-xs uppercase">Time</p>
+                      <p className="text-slate-500 text-xs uppercase inline-flex items-center gap-1">
+                        <Clock3 className="w-3.5 h-3.5" />
+                        Time
+                      </p>
                       <p className="text-slate-900 text-base md:text-lg font-semibold mt-1">{session.startTime}</p>
-                      <p className="text-slate-700 text-sm inline-flex items-center gap-1"><Clock3 className="w-4 h-4" />{Math.round(session.duration / 60)}h</p>
+                      <p className="text-slate-700 text-sm">{Math.round(session.duration / 60)}h</p>
                     </div>
                     <div className="rounded-xl bg-slate-50 border border-slate-200 p-3">
-                      <p className="text-slate-500 text-xs uppercase">Students</p>
-                      <p className="text-slate-900 text-base md:text-lg font-semibold mt-1">{(session.players || []).length}/{session.maxPlayers || 4}</p>
+                      <p className="text-slate-500 text-xs uppercase inline-flex items-center gap-1">
+                        <UserCheck className="w-3.5 h-3.5" />
+                        Students
+                      </p>
+                      <p className="text-slate-900 text-base md:text-lg font-semibold mt-1">{getSessionStudentIds(session).length}/{session.maxPlayers || 4}</p>
                       <p className="text-slate-700 text-sm">enrolled</p>
                     </div>
                   </div>
@@ -337,7 +482,7 @@ export function CoachPortalView() {
           <div className="space-y-3">
             {scheduleCards.length === 0 && <p className="text-slate-600 text-base">No schedule yet.</p>}
             {scheduleCards.map((session) => {
-              const courtName = COURT_DISPLAY_NAMES[session.courtId] || 'Training Court';
+              const courtName = courts.find((c) => c.id === session.courtId)?.name || 'Training Court';
               return (
                 <div key={session.id} className="rounded-xl border border-slate-200 bg-slate-50 p-4 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
                   <div>

@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { useNavigate, Link, useLocation } from 'react-router-dom';
 import { useApp } from '@/context/AppContext';
-import { UserPlus, Mail, Lock, User, Loader2, Eye, EyeOff } from 'lucide-react';
+import { Mail, Lock, User, Loader2, Eye, EyeOff } from 'lucide-react';
 import { toast } from 'sonner';
 
 export function SignUp() {
@@ -28,7 +28,9 @@ export function SignUp() {
     setIsLoading(true);
 
     try {
-      const { success, message } = await signup(email, password, selectedRole);
+      const { success, message } = await signup(email, password, selectedRole, {
+        name,
+      });
       
       if (success) {
         toast.success('Account created successfully! Please sign in.');

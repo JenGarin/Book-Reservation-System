@@ -17,7 +17,8 @@ import {
   Bell,
   Receipt,
   ClipboardList,
-  ListChecks
+  ListChecks,
+  UserRoundPlus
 } from 'lucide-react';
 import { useApp } from '@/context/AppContext';
 import { useTheme } from 'next-themes';
@@ -52,7 +53,9 @@ export function Sidebar({ currentView, onViewChange, role }: SidebarProps) {
     { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard, roles: ['admin', 'staff', 'coach', 'player'] },
     { id: 'requests', label: 'Requests', icon: ListChecks, roles: ['admin', 'staff'] },
     { id: 'booking', label: 'Book a Court', icon: Calendar, roles: ['admin', 'staff', 'coach', 'player'] },
-    { id: 'my-bookings', label: 'My Reservation', icon: History, roles: ['player', 'coach'] },
+    { id: 'my-bookings', label: 'My Reservation', icon: Calendar, roles: ['player', 'coach'] },
+    { id: 'history', label: 'History', icon: History, roles: ['player', 'coach'] },
+    { id: 'hire-coach', label: 'Hire a Coach', icon: UserRoundPlus, roles: ['player'] },
     { id: 'coach-sessions', label: 'My Sessions', icon: ClipboardList, roles: ['coach'] },
     { id: 'court-mgmt', label: 'Courts', icon: Dribbble, roles: ['admin', 'staff'] },
     { id: 'users', label: 'Players', icon: Users, roles: ['admin', 'staff'] },
@@ -61,7 +64,7 @@ export function Sidebar({ currentView, onViewChange, role }: SidebarProps) {
     { id: 'profile', label: 'Profile', icon: UserCircle, roles: ['admin', 'staff', 'coach', 'player'] },
     { id: 'settings', label: 'Settings', icon: Settings, roles: ['admin'] },
     { id: 'billing', label: 'Billing', icon: Receipt, roles: ['player', 'coach'] },
-    { id: 'pricing', label: 'Pricing', icon: CreditCard, roles: ['admin', 'staff', 'coach', 'player'] },
+    { id: 'pricing', label: 'Pricing', icon: CreditCard, roles: ['admin', 'staff', 'coach'] },
   ];
 
   const filteredItems = menuItems.filter(item => item.roles.includes(role));

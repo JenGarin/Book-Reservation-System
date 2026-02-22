@@ -1,22 +1,29 @@
+import { useMemo } from 'react';
 import { useApp } from '@/context/AppContext';
-import { useNavigate } from 'react-router-dom';
-import { ArrowLeft, Calendar, MapPin, Clock, PhilippinePeso, X, CheckCircle } from 'lucide-react';
+import { useLocation, useNavigate } from 'react-router-dom';
+import { ArrowLeft, Calendar, MapPin, Clock3, X, CheckCircle } from 'lucide-react';
 import { format } from 'date-fns';
 import { toast } from 'sonner';
 
-const COURT_DISPLAY_NAMES: Record<string, string> = {
-  c1: 'Downtown Basketball Court A',
-  c2: 'Riverside Tennis Court 1',
-  c3: 'Pickle Ball Court 1',
+const COURT_META: Record<string, { location: string; sport: string }> = {
+  c1: { location: 'Downtown Sports Complex', sport: 'Basketball' },
+  c2: { location: 'Riverside Park', sport: 'Tennis' },
+  c3: { location: 'Elite Sports Hub', sport: 'Pickleball' },
 };
 
 export function MyBookings() {
   const { currentUser, bookings, courts, cancelBooking } = useApp();
+  const location = useLocation();
   const navigate = useNavigate();
 
-  const myBookings = bookings
-    .filter(b => b.userId === currentUser?.id)
-    .sort((a, b) => b.date.getTime() - a.date.getTime());
+  const activeBookings = useMemo(
+    () =>
+      bookings
+        .filter((b) => b.userId === currentUser?.id)
+        .filter((b) => !(b.date < new Date() || b.status === 'completed' || b.status === 'cancelled' || b.status === 'no_show'))
+        .sort((a, b) => a.date.getTime() - b.date.getTime()),
+    [bookings, currentUser]
+  );
 
   const handleCancel = (bookingId: string) => {
     if (confirm('Are you sure you want to cancel this booking?')) {
@@ -27,153 +34,115 @@ export function MyBookings() {
 
   const getStatusColor = (status: string) => {
     const colors = {
-      confirmed: 'bg-green-100 text-green-700',
-      pending: 'bg-yellow-100 text-yellow-700',
-      cancelled: 'bg-red-100 text-red-700',
-      completed: 'bg-blue-100 text-blue-700',
-      no_show: 'bg-gray-100 text-gray-700',
+      confirmed: 'bg-teal-100 text-teal-700',
+      pending: 'bg-amber-100 text-amber-700',
+      cancelled: 'bg-rose-100 text-rose-700',
+      completed: 'bg-emerald-100 text-emerald-700',
+      no_show: 'bg-slate-200 text-slate-700',
     };
-    return colors[status as keyof typeof colors] || 'bg-gray-100 text-gray-700';
+    return colors[status as keyof typeof colors] || 'bg-slate-200 text-slate-700';
   };
 
   return (
-    <div className="min-h-screen bg-gray-50">
-      <header className="bg-white border-b border-gray-200">
-        <div className="max-w-7xl mx-auto px-4 py-4 flex items-center gap-4">
+    <div className="min-h-screen bg-transparent p-4 md:p-6 animate-in fade-in duration-500">
+      <div className="max-w-6xl mx-auto space-y-5">
+        <header className="bg-white border border-slate-200 rounded-2xl p-4 md:p-5 flex items-center gap-3 shadow-sm">
           <button
             onClick={() => navigate('/dashboard')}
-            className="p-2 hover:bg-gray-100 rounded-lg transition-colors"
+            className="p-2 hover:bg-slate-100 rounded-lg transition-colors"
+            aria-label="Back to dashboard"
           >
-            <ArrowLeft className="w-6 h-6" />
+            <ArrowLeft className="w-5 h-5" />
           </button>
           <div>
-            <h1 className="text-2xl">My Reservation</h1>
-            <p className="text-gray-600 text-sm">{myBookings.length} total bookings</p>
+            <h1 className="text-2xl font-bold text-slate-900">My Reservation</h1>
+            <p className="text-slate-600 text-sm">{activeBookings.length} active bookings</p>
           </div>
-        </div>
-      </header>
+        </header>
 
-      <div className="max-w-7xl mx-auto px-4 py-8">
-        {myBookings.length === 0 ? (
-          <div className="bg-white rounded-xl shadow-lg p-12 text-center">
-            <Calendar className="w-16 h-16 mx-auto mb-4 text-gray-400" />
-            <h3 className="text-xl mb-2">No bookings yet</h3>
-            <p className="text-gray-600 mb-6">Start by booking a court for your next game</p>
-            <button
-              onClick={() => navigate('/book')}
-              className="px-6 py-3 bg-teal-600 text-white rounded-lg hover:bg-teal-700 transition-colors"
-            >
-              Book a Court
-            </button>
-          </div>
-        ) : (
-          <div className="space-y-4">
-            {myBookings.map((booking) => {
-              const court = courts.find(c => c.id === booking.courtId);
-              const courtDisplayName = court
-                ? (COURT_DISPLAY_NAMES[court.id] || court.name)
-                : 'Unknown Court';
-              return (
-                <div key={booking.id} className="bg-white rounded-xl shadow-lg p-6">
-                  <div className="flex items-start justify-between mb-4">
-                    <div className="flex items-center gap-4">
-                      <div className="w-16 h-16 bg-teal-100 rounded-lg flex items-center justify-center">
-                        <MapPin className="w-8 h-8 text-teal-600" />
-                      </div>
-                      <div>
-                        <h3 className="text-xl mb-1">{courtDisplayName}</h3>
-                        <p className="text-gray-600 text-sm">Court #{court?.courtNumber}</p>
-                      </div>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <span className={`px-3 py-1 rounded-full text-sm capitalize ${getStatusColor(booking.status)}`}>
-                        {booking.status.replace('_', ' ')}
-                      </span>
-                      {booking.checkedIn && (
-                        <span className="px-3 py-1 rounded-full text-sm bg-blue-100 text-blue-700 flex items-center gap-1">
-                          <CheckCircle className="w-4 h-4" />
-                          Checked In
-                        </span>
-                      )}
-                    </div>
-                  </div>
+        <section className="rounded-3xl border border-[#7ea39f] bg-[#8eaaa4] p-4 md:p-5 shadow-sm">
+          <div className="rounded-2xl border border-slate-300 bg-white p-4 md:p-5">
+            <div className="mb-4">
+              <h2 className="text-2xl font-bold text-slate-900">Active Reservations</h2>
+              <p className="text-sm text-slate-600">Your upcoming and pending reservations</p>
+            </div>
 
-                  <div className="grid md:grid-cols-4 gap-4 mb-4">
-                    <div className="flex items-center gap-3">
-                      <Calendar className="w-5 h-5 text-gray-400" />
-                      <div>
-                        <div className="text-sm text-gray-600">Date</div>
-                        <div>{format(booking.date, 'MMM dd, yyyy')}</div>
-                      </div>
-                    </div>
-                    <div className="flex items-center gap-3">
-                      <Clock className="w-5 h-5 text-gray-400" />
-                      <div>
-                        <div className="text-sm text-gray-600">Time</div>
-                        <div>{booking.startTime} - {booking.endTime}</div>
-                      </div>
-                    </div>
-                    <div className="flex items-center gap-3">
-                      <PhilippinePeso className="w-5 h-5 text-gray-400" />
-                      <div>
-                        <div className="text-sm text-gray-600">Amount</div>
-                        <div>₱{booking.amount.toFixed(2)}</div>
-                      </div>
-                    </div>
-                    <div className="flex items-center gap-3">
-                      <div className="w-5 h-5 text-gray-400">
-                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                          <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
-                        </svg>
-                      </div>
-                      <div>
-                        <div className="text-sm text-gray-600">Type</div>
-                        <div className="capitalize">{booking.type.replace('_', ' ')}</div>
-                      </div>
-                    </div>
-                  </div>
-
-                  {booking.notes && (
-                    <div className="mb-4 p-3 bg-gray-50 rounded-lg">
-                      <div className="text-sm text-gray-600 mb-1">Notes</div>
-                      <div>{booking.notes}</div>
-                    </div>
-                  )}
-
-                  {booking.status === 'cancelled' && booking.rejectionReason && (
-                    <div className="mt-4 p-4 bg-red-50 text-red-900 rounded-xl border border-red-100 dark:bg-red-900/20 dark:text-red-300 dark:border-red-500/30">
-                      <p className="font-bold text-sm mb-1">Reason for Cancellation:</p>
-                      <p className="text-sm">
-                        {booking.rejectionReason}
-                      </p>
-                    </div>
-                  )}
-
-                  {booking.status === 'confirmed' && booking.date >= new Date() && (
-                    <div className="flex gap-2">
-                      <button
-                        onClick={() => handleCancel(booking.id)}
-                        className="px-4 py-2 bg-red-100 text-red-700 rounded-lg hover:bg-red-200 transition-colors flex items-center gap-2"
-                      >
-                        <X className="w-4 h-4" />
-                        Cancel Booking
-                      </button>
-                      {!booking.checkedIn && (
-                        <button
-                          onClick={() => navigate('/check-in')}
-                          className="px-4 py-2 bg-blue-100 text-blue-700 rounded-lg hover:bg-blue-200 transition-colors flex items-center gap-2"
-                        >
-                          <CheckCircle className="w-4 h-4" />
-                          Check In
-                        </button>
-                      )}
-                    </div>
-                  )}
+            <div className="space-y-3 max-h-[620px] overflow-y-auto pr-1">
+              {activeBookings.length === 0 && (
+                <div className="rounded-xl border border-slate-200 bg-slate-50 p-6 text-center text-slate-500">
+                  No active reservations.
                 </div>
-              );
-            })}
+              )}
+
+              {activeBookings.map((booking) => {
+                const court = courts.find((c) => c.id === booking.courtId);
+                const meta = COURT_META[booking.courtId] || { location: court?.name || 'Court Location', sport: 'General' };
+                const ratePerHour = court?.hourlyRate || 0;
+
+                return (
+                  <article key={booking.id} className="rounded-2xl border border-slate-300 bg-slate-50 p-4">
+                    <div className="flex items-start justify-between gap-4">
+                      <div>
+                        <h3 className="text-xl font-bold text-slate-900">{court?.name || 'Unknown Court'}</h3>
+                        <div className="flex items-center gap-2 mt-1">
+                          <span className="inline-flex items-center px-3 py-1 rounded-full bg-slate-900 text-white text-xs font-semibold">
+                            Upcoming
+                          </span>
+                          <span className={`inline-flex items-center px-2.5 py-1 rounded-full text-[11px] font-bold uppercase ${getStatusColor(booking.status)}`}>
+                            {booking.status.replace('_', ' ')}
+                          </span>
+                        </div>
+                      </div>
+                      <span className="inline-flex items-center px-2 py-1 rounded-full border border-slate-300 bg-white text-xs text-slate-700">
+                        {meta.sport}
+                      </span>
+                    </div>
+
+                    <div className="mt-3 text-sm text-slate-700 space-y-1.5">
+                      <p className="inline-flex items-center gap-1.5"><MapPin size={13} /> {meta.location}</p>
+                      <p className="inline-flex items-center gap-1.5"><Calendar size={13} /> {format(booking.date, 'MMMM dd, yyyy')}</p>
+                      <p className="inline-flex items-center gap-1.5"><Clock3 size={13} /> {booking.startTime} - {booking.endTime} ({Math.round(booking.duration / 60)} Hours)</p>
+                    </div>
+
+                    {booking.notes && (
+                      <p className="mt-3 text-xs text-slate-600 bg-white border border-slate-200 rounded-lg p-2.5">
+                        {booking.notes}
+                      </p>
+                    )}
+
+                    <div className="mt-3 flex items-end justify-between gap-3">
+                      <div>
+                        <p className="text-sm font-semibold text-slate-700">P{ratePerHour}/hour</p>
+                        <p className="text-2xl font-bold text-slate-900">Total: P{booking.amount.toFixed(0)}</p>
+                      </div>
+
+                      {(booking.status === 'confirmed' || booking.status === 'pending') && booking.date >= new Date() && (
+                        <div className="flex gap-2">
+                          <button
+                            onClick={() => handleCancel(booking.id)}
+                            className="px-3 py-2 bg-rose-100 text-rose-700 rounded-lg hover:bg-rose-200 transition-colors text-sm font-semibold inline-flex items-center gap-1"
+                          >
+                            <X className="w-4 h-4" />
+                            Cancel
+                          </button>
+                          {!booking.checkedIn && (
+                            <button
+                              onClick={() => navigate('/check-in', { state: { from: `${location.pathname}${location.search}` } })}
+                              className="px-3 py-2 bg-blue-100 text-blue-700 rounded-lg hover:bg-blue-200 transition-colors text-sm font-semibold inline-flex items-center gap-1"
+                            >
+                              <CheckCircle className="w-4 h-4" />
+                              Check In
+                            </button>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  </article>
+                );
+              })}
+            </div>
           </div>
-        )}
+        </section>
       </div>
     </div>
   );

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useApp } from '@/context/AppContext';
-import { useNavigate } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
 import {
   ArrowLeft,
   CalendarDays,
@@ -12,12 +12,6 @@ import {
 import QRCode from 'react-qr-code';
 import { format, isSameDay, parse } from 'date-fns';
 
-const COURT_DISPLAY_NAMES: Record<string, string> = {
-  c1: 'Downtown Basketball Court A',
-  c2: 'Riverside Tennis Court 1',
-  c3: 'Pickle Ball Court 1',
-};
-
 const COURT_META: Record<string, { location: string; sport: string; image: string }> = {
   c1: { location: 'Downtown Sports Complex', sport: 'Basketball', image: '/basketball.png' },
   c2: { location: 'Riverside Park', sport: 'Tennis', image: '/tennis.png' },
@@ -26,6 +20,7 @@ const COURT_META: Record<string, { location: string; sport: string; image: strin
 
 export function CheckIn() {
   const { bookings, currentUser, courts, checkInBooking } = useApp();
+  const location = useLocation();
   const navigate = useNavigate();
   const [showQr, setShowQr] = useState(false);
 
@@ -43,6 +38,14 @@ export function CheckIn() {
   const rafRef = useRef<number | null>(null);
 
   const isStaffView = currentUser?.role === 'admin' || currentUser?.role === 'staff';
+  const backFromState = typeof location.state?.from === 'string' ? location.state.from : '';
+  const handleBackNavigation = () => {
+    if (backFromState) {
+      navigate(backFromState);
+      return;
+    }
+    navigate(isStaffView ? '/dashboard' : '/profile');
+  };
 
   const activeBooking = useMemo(() => {
     if (!currentUser) return null;
@@ -81,7 +84,7 @@ export function CheckIn() {
     : null;
 
   const courtName = bookingCourt
-    ? (COURT_DISPLAY_NAMES[bookingCourt.id] || bookingCourt.name)
+    ? bookingCourt.name
     : 'No booking selected';
 
   const formatTo12Hour = (time24: string) => {
@@ -247,7 +250,7 @@ export function CheckIn() {
     : null;
 
   const scannedCourtName = scannedCourt
-    ? (COURT_DISPLAY_NAMES[scannedCourt.id] || scannedCourt.name)
+    ? scannedCourt.name
     : 'Unknown Court';
 
   const scannedMeta = scannedCourt ? COURT_META[scannedCourt.id] : null;
@@ -280,7 +283,7 @@ export function CheckIn() {
             <div className="flex items-start justify-between gap-3">
               <div className="flex items-start gap-3">
                 <button
-                  onClick={() => navigate('/profile')}
+                  onClick={handleBackNavigation}
                   className="mt-0.5 p-2 rounded-full hover:bg-white/10 transition-colors"
                   aria-label="Back"
                 >
@@ -469,7 +472,7 @@ export function CheckIn() {
       <div className="max-w-5xl mx-auto flex flex-col gap-4">
         <div className="flex items-center gap-4">
           <button
-            onClick={() => navigate('/profile')}
+            onClick={handleBackNavigation}
             className="p-2 rounded-full hover:bg-white/10 transition-colors"
             aria-label="Back to Profile"
           >

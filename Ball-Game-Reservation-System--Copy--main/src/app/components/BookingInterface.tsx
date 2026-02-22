@@ -7,12 +7,6 @@ import { toast } from 'sonner';
 import DatePicker from 'react-datepicker';
 import 'react-datepicker/dist/react-datepicker.css';
 
-const COURT_DISPLAY_NAMES: Record<string, string> = {
-  c1: 'Downtown Basketball Court A',
-  c2: 'Riverside Tennis Court 1',
-  c3: 'Pickle Ball Court 1',
-};
-
 export function BookingInterface() {
   const { courts, config, createBooking, getAvailableSlots, currentUser, bookings, joinSession, users } = useApp();
   const location = useLocation();
@@ -24,24 +18,27 @@ export function BookingInterface() {
   const [selectedTime, setSelectedTime] = useState('');
   const [bookingType, setBookingType] = useState<'open_play' | 'private' | 'training'>('private');
   const [duration, setDuration] = useState(60);
+  const availableCourts = courts.filter((c) => c.status === 'active');
 
   useEffect(() => {
-    if (!courts.length) return;
+    if (!availableCourts.length) {
+      setSelectedCourt('');
+      return;
+    }
 
-    if (prefillCourtId && courts.some((c) => c.id === prefillCourtId)) {
+    if (prefillCourtId && availableCourts.some((c) => c.id === prefillCourtId)) {
       setSelectedCourt(prefillCourtId);
       return;
     }
 
-    if (!selectedCourt) {
-      setSelectedCourt(courts[0]?.id || '');
+    if (!selectedCourt || !availableCourts.some((c) => c.id === selectedCourt)) {
+      setSelectedCourt(availableCourts[0]?.id || '');
     }
-  }, [courts, prefillCourtId, selectedCourt]);
+  }, [availableCourts, prefillCourtId, selectedCourt]);
 
   const availableSlots = selectedCourt ? getAvailableSlots(selectedCourt, selectedDate, bookingType) : [];
   const selectedCourtData = courts.find((c) => c.id === selectedCourt);
-  const getCourtDisplayName = (courtId: string, fallbackName: string) =>
-    COURT_DISPLAY_NAMES[courtId] || fallbackName;
+  const getCourtDisplayName = (_courtId: string, fallbackName: string) => fallbackName;
   const today = startOfToday();
   const calendarMaxDate = addMonths(today, 12);
 
@@ -147,7 +144,7 @@ export function BookingInterface() {
                 onChange={(e) => setSelectedCourt(e.target.value)}
                 className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-teal-500"
               >
-                {courts.filter(c => c.status === 'active').map((court) => (
+                {availableCourts.map((court) => (
                   <option key={court.id} value={court.id}>
                     {getCourtDisplayName(court.id, court.name)} - {court.courtNumber} ({court.type}, {court.surfaceType})
                   </option>

@@ -13,6 +13,7 @@ import { DashboardDesign } from './components/DashboardDesign';
 import { BookingInterface } from './components/BookingInterface';
 import { BookingPayment } from './components/BookingPayment';
 import { MyBookings } from './components/MyBookings';
+import { BookingHistoryView } from './components/BookingHistoryView';
 import { CourtManagementView } from './components/CourtManagementView';
 import { Reports } from './components/Reports';
 import { ProfileSettings } from './components/ProfileSettings';
@@ -27,6 +28,7 @@ import { SettingsView } from './components/SettingsView';
 import { PaymentHistory } from './components/PaymentHistory';
 import { CoachSessions } from './components/CoachSessions';
 import { PendingBookings } from './components/PendingBookings';
+import { HireCoachView } from './components/HireCoachView';
 
 function DashboardLayout() {
   const { currentUser } = useApp();
@@ -79,6 +81,12 @@ function DashboardEntry() {
   return <DashboardDesign />;
 }
 
+function PricingEntry() {
+  const { currentUser } = useApp();
+  if (currentUser?.role === 'player') return <Navigate to="/dashboard" replace />;
+  return <Pricing />;
+}
+
 export default function App() {
   return (
     <ThemeProvider attribute="class" defaultTheme="system" enableSystem>
@@ -96,17 +104,19 @@ export default function App() {
               <Route path="/booking" element={<BookingInterface />} />
               <Route path="/booking/payment" element={<BookingPayment />} />
               <Route path="/my-bookings" element={<MyBookings />} />
+              <Route path="/history" element={<BookingHistoryView />} />
               <Route path="/court-mgmt" element={<CourtManagementView />} />
               <Route path="/analytics" element={<Reports />} />
               <Route path="/requests" element={<PendingBookings />} />
               <Route path="/profile" element={<ProfileEntry />} />
               <Route path="/profile-settings" element={<ProfileSettings />} />
               <Route path="/notifications" element={<NotificationsView />} />
-              <Route path="/pricing" element={<Pricing />} />
+              <Route path="/pricing" element={<PricingEntry />} />
               <Route path="/users" element={<UserManagementView />} />
               <Route path="/settings" element={<SettingsView />} />
               <Route path="/billing" element={<PaymentHistory />} />
               <Route path="/coach-sessions" element={<CoachSessions />} />
+              <Route path="/hire-coach" element={<HireCoachView />} />
             </Route>
 
             <Route path="/check-in" element={<CheckIn />} />

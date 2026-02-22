@@ -11,7 +11,7 @@ import {
   ScanLine,
   Building2,
 } from 'lucide-react';
-import { useNavigate } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
 import { useApp } from '@/context/AppContext';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
@@ -28,6 +28,7 @@ function getChangeTag(value: number) {
 
 export function DashboardView() {
   const { bookings, courts, users, config } = useApp();
+  const location = useLocation();
   const navigate = useNavigate();
 
   const totalRevenue = bookings
@@ -149,7 +150,7 @@ export function DashboardView() {
                 {checkedInToday}/{todayBookings.length || 0}
               </p>
               <button
-                onClick={() => navigate('/check-in')}
+                onClick={() => navigate('/check-in', { state: { from: `${location.pathname}${location.search}` } })}
                 className="mt-3 text-sm text-teal-700 font-medium hover:text-teal-800"
               >
                 Open Check-In

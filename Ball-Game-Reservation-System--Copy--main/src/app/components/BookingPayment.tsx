@@ -19,12 +19,6 @@ interface BookingDraft {
   players?: string[];
 }
 
-const COURT_DISPLAY_NAMES: Record<string, string> = {
-  c1: 'Downtown Basketball Court A',
-  c2: 'Riverside Tennis Court 1',
-  c3: 'Pickle Ball Court 1',
-};
-
 const WALLET_LINKS: Record<PaymentMethod, { appUrl: string; webUrl: string }> = {
   gcash: {
     appUrl: 'gcash://',
@@ -48,7 +42,7 @@ export function BookingPayment() {
   const courtName = useMemo(() => {
     if (!draft) return '';
     const court = courts.find((c) => c.id === draft.courtId);
-    return COURT_DISPLAY_NAMES[draft.courtId] || court?.name || 'Selected Court';
+    return court?.name || 'Selected Court';
   }, [courts, draft]);
 
   if (!draft || !currentUser) {
