@@ -114,8 +114,8 @@ export function ProfileSettings() {
   return (
     <div className="max-w-4xl mx-auto space-y-8 animate-in fade-in duration-500">
         <div>
-            <h1 className="text-2xl font-bold text-slate-100">Profile Settings</h1>
-            <p className="text-slate-300">Manage your account preferences and security.</p>
+            <h1 className="text-2xl font-bold text-slate-900 dark:text-slate-100">Profile Settings</h1>
+            <p className="text-slate-600 dark:text-slate-300">Manage your account preferences and security.</p>
         </div>
 
         <div className="grid md:grid-cols-3 gap-8">

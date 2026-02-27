@@ -31,13 +31,13 @@ export function CoachProfileView() {
   return (
     <div className="max-w-6xl mx-auto space-y-8 animate-in fade-in duration-300">
       <div>
-        <h1 className="text-2xl font-bold text-slate-100">Coach Profile</h1>
-        <p className="text-slate-300">Your account overview, coaching activity, and quick actions.</p>
+        <h1 className="text-2xl font-bold text-slate-900 dark:text-slate-100">Coach Profile</h1>
+        <p className="text-slate-600 dark:text-slate-300">Your account overview, coaching activity, and quick actions.</p>
       </div>
 
       <div className="grid md:grid-cols-3 gap-6">
         <div className="md:col-span-2 space-y-6">
-          <section className="bg-white rounded-2xl border border-slate-200 p-6 shadow-sm">
+          <section className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 p-6 shadow-sm">
             <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
               <div className="flex items-start gap-4">
                 <div className="w-16 h-16 rounded-full bg-teal-100 text-teal-700 flex items-center justify-center overflow-hidden border border-teal-200">
@@ -48,8 +48,8 @@ export function CoachProfileView() {
                   )}
                 </div>
                 <div>
-                  <h2 className="text-2xl font-semibold text-slate-900">{currentUser?.name || 'Coach Profile'}</h2>
-                  <p className="text-slate-500 capitalize">Role: {currentUser?.role || 'coach'}</p>
+                  <h2 className="text-2xl font-semibold text-slate-900 dark:text-slate-100">{currentUser?.name || 'Coach Profile'}</h2>
+                  <p className="text-slate-500 dark:text-slate-400 capitalize">Role: {currentUser?.role || 'coach'}</p>
                   <div className="mt-2">
                     <span
                       className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold uppercase ${
@@ -64,7 +64,7 @@ export function CoachProfileView() {
                       {currentUser?.coachVerificationStatus || 'unverified'}
                     </span>
                   </div>
-                  <div className="mt-3 flex flex-wrap gap-4 text-sm text-slate-600">
+                  <div className="mt-3 flex flex-wrap gap-4 text-sm text-slate-600 dark:text-slate-400">
                     <span className="inline-flex items-center gap-1.5">
                       <Mail className="w-4 h-4" />
                       {currentUser?.email || 'No email'}
@@ -79,7 +79,7 @@ export function CoachProfileView() {
                     </span>
                   </div>
                   {(currentUser?.coachVerificationMethod || currentUser?.coachVerificationId) && (
-                    <p className="text-xs text-slate-500 mt-2">
+                    <p className="text-xs text-slate-500 dark:text-slate-400 mt-2">
                       Verification: {currentUser?.coachVerificationMethod || 'credential'}{currentUser?.coachVerificationId ? ` (${currentUser.coachVerificationId})` : ''}
                     </p>
                   )}
@@ -94,28 +94,28 @@ export function CoachProfileView() {
             </div>
           </section>
 
-          <section className="bg-white rounded-2xl border border-slate-200 p-6 shadow-sm">
-            <h3 className="text-lg font-semibold text-slate-900 mb-4">Coaching Overview</h3>
+          <section className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 p-6 shadow-sm">
+            <h3 className="text-lg font-semibold text-slate-900 dark:text-slate-100 mb-4">Coaching Overview</h3>
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-              <div className="rounded-xl border border-slate-200 p-4">
-                <p className="text-xs uppercase tracking-wide text-slate-500">Upcoming Sessions</p>
-                <p className="text-3xl font-semibold text-slate-900 mt-1">{upcomingSessions.length}</p>
+              <div className="rounded-xl border border-slate-200 dark:border-slate-700 p-4">
+                <p className="text-xs uppercase tracking-wide text-slate-500 dark:text-slate-400">Upcoming Sessions</p>
+                <p className="text-3xl font-semibold text-slate-900 dark:text-slate-100 mt-1">{upcomingSessions.length}</p>
               </div>
-              <div className="rounded-xl border border-slate-200 p-4">
-                <p className="text-xs uppercase tracking-wide text-slate-500">Completed Sessions</p>
-                <p className="text-3xl font-semibold text-slate-900 mt-1">{completedSessions.length}</p>
+              <div className="rounded-xl border border-slate-200 dark:border-slate-700 p-4">
+                <p className="text-xs uppercase tracking-wide text-slate-500 dark:text-slate-400">Completed Sessions</p>
+                <p className="text-3xl font-semibold text-slate-900 dark:text-slate-100 mt-1">{completedSessions.length}</p>
               </div>
-              <div className="rounded-xl border border-slate-200 p-4">
-                <p className="text-xs uppercase tracking-wide text-slate-500">Students Coached</p>
-                <p className="text-3xl font-semibold text-slate-900 mt-1">{totalStudents}</p>
+              <div className="rounded-xl border border-slate-200 dark:border-slate-700 p-4">
+                <p className="text-xs uppercase tracking-wide text-slate-500 dark:text-slate-400">Students Coached</p>
+                <p className="text-3xl font-semibold text-slate-900 dark:text-slate-100 mt-1">{totalStudents}</p>
               </div>
             </div>
           </section>
 
-          <section className="bg-white rounded-2xl border border-slate-200 p-6 shadow-sm">
-            <h3 className="text-lg font-semibold text-slate-900 mb-4">Next Session</h3>
+          <section className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 p-6 shadow-sm">
+            <h3 className="text-lg font-semibold text-slate-900 dark:text-slate-100 mb-4">Next Session</h3>
             {nextSession ? (
-              <div className="space-y-2 text-slate-700">
+              <div className="space-y-2 text-slate-700 dark:text-slate-300">
                 <p className="inline-flex items-center gap-2">
                   <CalendarDays className="w-4 h-4" />
                   {format(nextSession.date, 'EEEE, MMM d, yyyy')}
@@ -129,13 +129,13 @@ export function CoachProfileView() {
                   {(nextSession.players || []).length}/{nextSession.maxPlayers || 4} students enrolled
                 </p>
                 {nextSession.notes && (
-                  <p className="mt-3 text-sm text-slate-600 bg-slate-50 border border-slate-200 rounded-lg p-3">
+                  <p className="mt-3 text-sm text-slate-600 dark:text-slate-400 bg-slate-50 dark:bg-slate-800/40 border border-slate-200 dark:border-slate-700 rounded-lg p-3">
                     {nextSession.notes}
                   </p>
                 )}
               </div>
             ) : (
-              <p className="text-slate-500">No upcoming session scheduled.</p>
+              <p className="text-slate-500 dark:text-slate-400">No upcoming session scheduled.</p>
             )}
           </section>
         </div>
@@ -152,19 +152,19 @@ export function CoachProfileView() {
             </button>
           </section>
 
-          <section className="bg-white rounded-2xl border border-slate-200 p-5 shadow-sm">
-            <h3 className="text-lg font-semibold text-slate-900 mb-4">Coach Actions</h3>
+          <section className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 p-5 shadow-sm">
+            <h3 className="text-lg font-semibold text-slate-900 dark:text-slate-100 mb-4">Coach Actions</h3>
             <div className="space-y-2">
               <button
                 onClick={() => navigate('/coach-sessions')}
-                className="w-full text-left p-3 rounded-lg border border-slate-200 hover:bg-slate-50 text-slate-700 inline-flex items-center gap-2"
+                className="w-full text-left p-3 rounded-lg border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-300 inline-flex items-center gap-2"
               >
                 <ClipboardList className="w-4 h-4" />
                 Manage My Sessions
               </button>
               <button
                 onClick={() => navigate('/booking')}
-                className="w-full text-left p-3 rounded-lg border border-slate-200 hover:bg-slate-50 text-slate-700 inline-flex items-center gap-2"
+                className="w-full text-left p-3 rounded-lg border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-300 inline-flex items-center gap-2"
               >
                 <CalendarDays className="w-4 h-4" />
                 Book a Court
@@ -172,9 +172,9 @@ export function CoachProfileView() {
             </div>
           </section>
 
-          <section className="bg-white rounded-2xl border border-slate-200 p-5 shadow-sm">
-            <h3 className="text-lg font-semibold text-slate-900 mb-3">Coach Notes</h3>
-            <ul className="space-y-2 text-sm text-slate-600">
+          <section className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 p-5 shadow-sm">
+            <h3 className="text-lg font-semibold text-slate-900 dark:text-slate-100 mb-3">Coach Notes</h3>
+            <ul className="space-y-2 text-sm text-slate-600 dark:text-slate-400">
               <li>Keep session notes updated for each training block.</li>
               <li>Mark attendance right after each session.</li>
               <li>Use profile settings to keep your contact details current.</li>

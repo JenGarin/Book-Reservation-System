@@ -1,359 +1,295 @@
-import { useEffect, useState } from 'react';
+import { useMemo, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
-import { useApp } from '@/context/AppContext';
-import { Calendar, Clock, MapPin, PhilippinePeso, Users as UsersIcon, CheckCircle, ChevronLeft, ChevronRight } from 'lucide-react';
-import { format, addDays, addMonths, startOfToday, isSameDay, isSameMonth, parse } from 'date-fns';
+import { Calendar as CalendarIcon } from 'lucide-react';
+import { addMinutes, format } from 'date-fns';
 import { toast } from 'sonner';
-import DatePicker from 'react-datepicker';
-import 'react-datepicker/dist/react-datepicker.css';
+import { useApp } from '@/context/AppContext';
+
+type BookingType = 'private' | 'open_play' | 'training';
+
+const COURT_SPORT: Record<string, string> = {
+  c1: 'Basketball',
+  c2: 'Tennis',
+  c3: 'Pickle Ball',
+};
+
+const toTimeLabel = (minutes: number) => {
+  if (minutes % 60 === 0) {
+    const hours = minutes / 60;
+    return `${hours} hour${hours === 1 ? '' : 's'}`;
+  }
+  return `${(minutes / 60).toFixed(1).replace(/\.0$/, '')} hours`;
+};
+
+const formatHHmm = (date: Date) => format(date, 'HH:mm');
 
 export function BookingInterface() {
-  const { courts, config, createBooking, getAvailableSlots, currentUser, bookings, joinSession, users } = useApp();
-  const location = useLocation();
+  const { currentUser, courts, config } = useApp();
   const navigate = useNavigate();
+  const location = useLocation();
   const prefillCourtId = (location.state as { prefillCourtId?: string } | null)?.prefillCourtId;
-  const [selectedCourt, setSelectedCourt] = useState(courts[0]?.id || '');
-  const [selectedDate, setSelectedDate] = useState(startOfToday());
-  const [visibleMonth, setVisibleMonth] = useState(startOfToday());
+
+  const defaultCourtId = prefillCourtId || courts.find((c) => c.status === 'active')?.id || '';
+  const [name, setName] = useState(currentUser?.name || '');
+  const [selectedCourtId, setSelectedCourtId] = useState(defaultCourtId);
+  const [selectedDate, setSelectedDate] = useState('');
   const [selectedTime, setSelectedTime] = useState('');
-  const [bookingType, setBookingType] = useState<'open_play' | 'private' | 'training'>('private');
-  const [duration, setDuration] = useState(60);
-  const availableCourts = courts.filter((c) => c.status === 'active');
+  const [duration, setDuration] = useState(config.bookingInterval || 60);
+  const [bookingType, setBookingType] = useState<BookingType>('private');
 
-  useEffect(() => {
-    if (!availableCourts.length) {
-      setSelectedCourt('');
-      return;
+  const selectedCourt = useMemo(() => courts.find((c) => c.id === selectedCourtId), [courts, selectedCourtId]);
+
+  const timeOptions = useMemo(() => {
+    const step = config.bookingInterval || 30;
+    const options: string[] = [];
+
+    for (let mins = 0; mins < 24 * 60; mins += step) {
+      const hh = String(Math.floor(mins / 60)).padStart(2, '0');
+      const mm = String(mins % 60).padStart(2, '0');
+      options.push(`${hh}:${mm}`);
     }
 
-    if (prefillCourtId && availableCourts.some((c) => c.id === prefillCourtId)) {
-      setSelectedCourt(prefillCourtId);
-      return;
-    }
+    return options;
+  }, [config.bookingInterval]);
 
-    if (!selectedCourt || !availableCourts.some((c) => c.id === selectedCourt)) {
-      setSelectedCourt(availableCourts[0]?.id || '');
-    }
-  }, [availableCourts, prefillCourtId, selectedCourt]);
-
-  const availableSlots = selectedCourt ? getAvailableSlots(selectedCourt, selectedDate, bookingType) : [];
-  const selectedCourtData = courts.find((c) => c.id === selectedCourt);
-  const getCourtDisplayName = (_courtId: string, fallbackName: string) => fallbackName;
-  const today = startOfToday();
-  const calendarMaxDate = addMonths(today, 12);
-
-  // Find existing sessions to join
-  const joinableSessions = bookings.filter(b => 
-    b.courtId === selectedCourt &&
-    isSameDay(b.date, selectedDate) &&
-    b.status !== 'cancelled' &&
-    (b.type === 'open_play' || b.type === 'training') &&
-    bookingType === b.type &&
-    (b.players?.length || 0) < (b.maxPlayers || 4) &&
-    !b.players?.includes(currentUser?.id || '')
-  );
-
-  const calculatePrice = () => {
-    if (!selectedCourtData) return 0;
-    const hours = duration / 60;
-    // Check if in peak hours (simplified)
-    const isPeak = config.peakHours.some((ph) => {
-      return selectedTime >= ph.start && selectedTime <= ph.end;
-    });
-    const rate = isPeak && selectedCourtData.peakHourRate
-      ? selectedCourtData.peakHourRate
-      : selectedCourtData.hourlyRate;
-    return rate * hours;
+  const rateForTime = (startTime: string) => {
+    if (!selectedCourt) return 0;
+    const isPeak = config.peakHours.some((peak) => startTime >= peak.start && startTime <= peak.end);
+    return isPeak && selectedCourt.peakHourRate ? selectedCourt.peakHourRate : selectedCourt.hourlyRate;
   };
 
-  const handleBooking = () => {
-    if (!selectedCourt || !selectedTime || !currentUser) {
-      toast.error('Please select court, date and time');
+  const totalPrice = useMemo(() => {
+    if (!selectedCourt || !selectedTime) return 0;
+    const hourly = rateForTime(selectedTime);
+    return (hourly * duration) / 60;
+  }, [duration, selectedCourt, selectedTime]);
+
+  const endTime = useMemo(() => {
+    if (!selectedTime) return '';
+    const [hours, minutes] = selectedTime.split(':').map(Number);
+    const startDate = new Date(2000, 0, 1, hours, minutes);
+    return formatHHmm(addMinutes(startDate, duration));
+  }, [duration, selectedTime]);
+
+  const handleProceed = () => {
+    if (!currentUser) {
+      toast.error('Please sign in to continue.');
+      return;
+    }
+    if (!selectedCourt) {
+      toast.error('Please select a court.');
+      return;
+    }
+    if (!name.trim()) {
+      toast.error('Please enter your name.');
+      return;
+    }
+    if (!selectedDate) {
+      toast.error('Please select a date.');
+      return;
+    }
+    if (!selectedTime) {
+      toast.error('Please select a start time.');
+      return;
+    }
+    if (!duration || duration <= 0) {
+      toast.error('Please enter a valid duration.');
       return;
     }
 
-    const endHour = parseInt(selectedTime.split(':')[0]) + Math.floor(duration / 60);
-    const endMin = parseInt(selectedTime.split(':')[1]) + (duration % 60);
-    const endTime = `${String(endHour).padStart(2, '0')}:${String(endMin).padStart(2, '0')}`;
-
+    const dateObj = new Date(`${selectedDate}T00:00:00`);
     navigate('/booking/payment', {
       state: {
         bookingDraft: {
-          courtId: selectedCourt,
+          courtId: selectedCourt.id,
           type: bookingType,
-          date: selectedDate.toISOString(),
+          date: dateObj.toISOString(),
           startTime: selectedTime,
           endTime,
           duration,
-          amount: calculatePrice(),
-          maxPlayers: bookingType === 'open_play' ? 4 : undefined,
-          players: bookingType === 'open_play' ? [currentUser.id] : undefined,
+          amount: totalPrice,
         },
       },
     });
   };
 
-  const handleJoinSession = async (bookingId: string) => {
-    try {
-      await joinSession(bookingId);
-      toast.success('Successfully joined the session!');
-    } catch (error: any) {
-      toast.error(error.message || 'Failed to join session');
-    }
-  };
+  if (!selectedCourt) {
+    return (
+      <div className="max-w-3xl mx-auto p-6">
+        <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl shadow p-6 text-center">
+          <p className="text-slate-700 dark:text-slate-300 mb-4">No active court is available for booking.</p>
+          <button
+            type="button"
+            onClick={() => navigate('/booking')}
+            className="px-4 py-2 rounded-lg bg-teal-600 text-white hover:bg-teal-700"
+          >
+            Back to Booking
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   return (
-    <div className="max-w-6xl mx-auto p-6 space-y-6">
-      <div className="bg-white rounded-xl shadow-lg p-6">
-        <h2 className="text-2xl mb-6 flex items-center gap-2">
-          <Calendar className="w-6 h-6 text-teal-600" />
-          Book a Court
-        </h2>
+    <div className="mx-auto max-w-[1500px] p-3 sm:p-4 md:p-6 xl:p-8">
+      <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-xl p-4 sm:p-5 md:p-8 xl:p-10">
+        <div className="mb-6">
+          <h2 className="text-2xl font-bold text-slate-900 dark:text-slate-100 md:text-3xl">Book {selectedCourt.name}</h2>
+          <p className="text-slate-600 dark:text-slate-400 mt-1">Select your preferred date and time to reserve this {COURT_SPORT[selectedCourt.id] || 'court'} court.</p>
+        </div>
 
-        <div className="grid md:grid-cols-2 gap-6">
-          {/* Left Column - Selection */}
-          <div className="space-y-4">
-            {/* Booking Type */}
+        <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_400px] 2xl:grid-cols-[minmax(0,1fr)_440px]">
+          <div className="space-y-6">
             <div>
-              <label className="block text-sm mb-2">Booking Type</label>
-              <div className="grid grid-cols-3 gap-2">
-                {(['private', 'open_play', 'training'] as const).map((type) => (
+              <label className="block text-base font-semibold text-slate-800 dark:text-slate-200 mb-2">Your name</label>
+              <input
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                placeholder="Enter your name"
+                className="w-full h-12 rounded-xl border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 px-4 text-base text-slate-900 dark:text-slate-100 outline-none focus:border-teal-600"
+              />
+            </div>
+
+            <div className="grid gap-4 md:grid-cols-2">
+              <div>
+                <label className="block text-base font-semibold text-slate-800 dark:text-slate-200 mb-2">Select date</label>
+                <div className="relative">
+                  <CalendarIcon className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500 dark:text-slate-400" size={18} />
+                  <input
+                    type="date"
+                    value={selectedDate}
+                    min={format(new Date(), 'yyyy-MM-dd')}
+                    onChange={(e) => setSelectedDate(e.target.value)}
+                    className="w-full h-12 rounded-xl border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 pl-10 pr-3 text-base text-slate-900 dark:text-slate-100 outline-none focus:border-teal-600"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-base font-semibold text-slate-800 dark:text-slate-200 mb-2">Court</label>
+                <select
+                  value={selectedCourtId}
+                  onChange={(e) => {
+                    setSelectedCourtId(e.target.value);
+                    setSelectedTime('');
+                  }}
+                  className="w-full h-12 rounded-xl border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 px-3 text-base text-slate-900 dark:text-slate-100 outline-none focus:border-teal-600"
+                >
+                  {courts
+                    .filter((c) => c.status === 'active')
+                    .map((court) => (
+                      <option key={court.id} value={court.id}>
+                        {court.name}
+                      </option>
+                    ))}
+                </select>
+              </div>
+            </div>
+
+            <div>
+              <label className="block text-base font-semibold text-slate-800 dark:text-slate-200 mb-3">Start Time</label>
+              <div className="grid grid-cols-3 gap-2 sm:grid-cols-4 lg:grid-cols-5 2xl:grid-cols-6">
+                {timeOptions.map((time) => (
                   <button
-                    key={type}
-                    onClick={() => setBookingType(type)}
-                    className={`px-4 py-2 rounded-lg border-2 transition-all ${
-                      bookingType === type
-                        ? 'border-teal-600 bg-teal-50 text-teal-700'
-                        : 'border-gray-200 hover:border-gray-300'
+                    key={time}
+                    type="button"
+                    onClick={() => setSelectedTime(time)}
+                    className={`h-11 rounded-lg border text-sm transition-colors sm:text-base ${
+                      selectedTime === time
+                        ? 'border-teal-700 bg-teal-600 text-white'
+                        : 'border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-700'
                     }`}
                   >
-                    {type.split('_').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ')}
+                    {time}
                   </button>
                 ))}
               </div>
             </div>
 
-            {/* Court Selection */}
             <div>
-              <label className="block text-sm mb-2 flex items-center gap-2">
-                <MapPin className="w-4 h-4" />
-                Select Court
-              </label>
-              <select
-                value={selectedCourt}
-                onChange={(e) => setSelectedCourt(e.target.value)}
-                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-teal-500"
-              >
-                {availableCourts.map((court) => (
-                  <option key={court.id} value={court.id}>
-                    {getCourtDisplayName(court.id, court.name)} - {court.courtNumber} ({court.type}, {court.surfaceType})
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            {/* Date Selection */}
-            <div>
-              <label className="block text-sm mb-2">Select Date</label>
-              <div className="relative">
-                <Calendar className="w-4 h-4 text-gray-500 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
-                <DatePicker
-                  selected={selectedDate}
-                  onChange={(date) => {
-                    if (!date) return;
-                    setSelectedDate(date);
-                    setVisibleMonth(date);
-                    setSelectedTime('');
+              <label className="block text-base font-semibold text-slate-800 dark:text-slate-200 mb-3">Duration (hours)</label>
+              <div className="space-y-2">
+                <input
+                  type="number"
+                  min="0.5"
+                  step="0.5"
+                  value={duration / 60}
+                  onChange={(e) => {
+                    const hours = Number(e.target.value);
+                    if (Number.isFinite(hours) && hours > 0) {
+                      setDuration(Math.round(hours * 60));
+                    }
                   }}
-                  onMonthChange={(date) => setVisibleMonth(date)}
-                  minDate={today}
-                  maxDate={calendarMaxDate}
-                  dateFormat="MMMM d, yyyy"
-                  className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-teal-500"
-                  placeholderText="Select booking date"
-                  dayClassName={(date) =>
-                    isSameMonth(date, visibleMonth) ? 'current-month-day' : 'outside-month-day'
-                  }
-                  renderCustomHeader={({
-                    date,
-                    decreaseMonth,
-                    increaseMonth,
-                    prevMonthButtonDisabled,
-                    nextMonthButtonDisabled,
-                  }) => (
-                    <div className="flex items-center justify-between px-2 py-1 mb-2">
-                      <button
-                        type="button"
-                        onClick={decreaseMonth}
-                        disabled={prevMonthButtonDisabled}
-                        className="p-1 rounded hover:bg-slate-100 disabled:opacity-40"
-                        aria-label="Previous month"
-                      >
-                        <ChevronLeft className="w-4 h-4" />
-                      </button>
-                      <span className="text-sm font-semibold text-slate-800">
-                        {format(date, 'MMMM yyyy')}
-                      </span>
-                      <button
-                        type="button"
-                        onClick={increaseMonth}
-                        disabled={nextMonthButtonDisabled}
-                        className="p-1 rounded hover:bg-slate-100 disabled:opacity-40"
-                        aria-label="Next month"
-                      >
-                        <ChevronRight className="w-4 h-4" />
-                      </button>
-                    </div>
-                  )}
+                  className="h-12 w-full max-w-[220px] rounded-xl border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 px-4 text-base text-slate-900 dark:text-slate-100 outline-none focus:border-teal-600"
                 />
+                <p className="text-sm text-slate-500 dark:text-slate-400">Enter any duration in hours (e.g. 1.5, 2, 3.5).</p>
               </div>
             </div>
 
-            {/* Duration */}
             <div>
-              <label className="block text-sm mb-2 flex items-center gap-2">
-                <Clock className="w-4 h-4" />
-                Duration
-              </label>
-              <select
-                value={duration}
-                onChange={(e) => setDuration(Number(e.target.value))}
-                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-teal-500"
-              >
-                <option value={30}>30 minutes</option>
-                <option value={60}>1 hour</option>
-                <option value={90}>1.5 hours</option>
-                <option value={120}>2 hours</option>
-              </select>
+              <label className="block text-base font-semibold text-slate-800 dark:text-slate-200 mb-3">Booking Type</label>
+              <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+                {(['private', 'open_play', 'training'] as BookingType[]).map((type) => (
+                  <button
+                    key={type}
+                    type="button"
+                    onClick={() => setBookingType(type)}
+                    className={`h-11 rounded-lg border text-sm capitalize transition-colors sm:text-base ${
+                      bookingType === type
+                        ? 'border-teal-700 bg-teal-600 text-white'
+                        : 'border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-700'
+                    }`}
+                  >
+                    {type.replace('_', ' ')}
+                  </button>
+                ))}
+              </div>
             </div>
           </div>
 
-          {/* Right Column - Available Slots */}
-          <div>
-            <label className="block text-sm mb-2">Available Time Slots</label>
-            
-            {/* Joinable Sessions Section */}
-            {(bookingType === 'open_play' || bookingType === 'training') && joinableSessions.length > 0 && (
-              <div className="mb-6">
-                <h3 className="text-sm font-semibold text-teal-700 mb-2">Join Existing Sessions</h3>
-                <div className="space-y-2">
-                  {joinableSessions.map(session => {
-                    const host = users.find(u => u.id === session.userId);
-                    return (
-                      <div key={session.id} className="flex items-center justify-between p-3 border border-teal-100 bg-teal-50 rounded-lg">
-                        <div>
-                          <div className="font-medium text-teal-900">{session.startTime} - {session.endTime}</div>
-                          <div className="text-xs text-teal-600 flex items-center gap-1">
-                            <UsersIcon size={12} />
-                            {session.players?.length || 0} / {session.maxPlayers || 4} Players
-                            {host && <span className="ml-1 text-teal-500">• Host: {host.name}</span>}
-                          </div>
-                        </div>
-                        <button
-                          onClick={() => handleJoinSession(session.id)}
-                          className="px-3 py-1.5 bg-teal-600 text-white text-xs font-bold rounded-md hover:bg-teal-700 transition-colors"
-                        >
-                          Join
-                        </button>
-                      </div>
-                    );
-                  })}
-                </div>
+          <div className="h-fit xl:sticky xl:top-6">
+            <h3 className="text-lg font-bold text-slate-900 dark:text-slate-100 mb-3">Booking Summary</h3>
+            <div className="rounded-xl border border-slate-200 dark:border-slate-700 bg-[#d6e8e8] dark:bg-slate-800 p-4">
+              <div className="grid grid-cols-2 gap-y-1 text-base text-slate-800 dark:text-slate-200">
+                <span>Court:</span>
+                <span className="text-right">{selectedCourt.name}</span>
+                <span>Sport:</span>
+                <span className="text-right">{COURT_SPORT[selectedCourt.id] || 'General'}</span>
+                <span>Date:</span>
+                <span className="text-right">{selectedDate ? format(new Date(`${selectedDate}T00:00:00`), 'MMMM d, yyyy') : 'Not selected'}</span>
+                <span>Time:</span>
+                <span className="text-right">{selectedTime ? `${selectedTime} - ${endTime}` : 'Not selected'}</span>
+                <span>Duration:</span>
+                <span className="text-right">{toTimeLabel(duration)}</span>
+                <span>Rate:</span>
+                <span className="text-right">PHP {selectedTime ? rateForTime(selectedTime).toFixed(0) : '0'}/hour</span>
               </div>
-            )}
-
-            <div className="border border-gray-200 rounded-lg p-4 max-h-96 overflow-y-auto">
-              {availableSlots.length === 0 ? (
-                <p className="text-gray-500 text-center py-8">No available slots</p>
-              ) : (
-                <div className="grid grid-cols-3 gap-2">
-                  {availableSlots.map((slot) => (
-                    <button
-                      key={slot}
-                      onClick={() => setSelectedTime(slot)}
-                      className={`px-3 py-2 rounded-lg border-2 transition-all ${
-                        selectedTime === slot
-                          ? 'border-teal-600 bg-teal-50 text-teal-700'
-                          : 'border-gray-200 hover:border-gray-300'
-                      }`}
-                    >
-                      {slot}
-                    </button>
-                  ))}
-                </div>
-              )}
+              <div className="h-px bg-slate-400/40 dark:bg-slate-600/40 my-3" />
+              <div className="flex items-center justify-between text-xl font-bold text-slate-900 dark:text-slate-100">
+                <span>Total Price:</span>
+                <span>PHP {totalPrice.toFixed(0)}</span>
+              </div>
             </div>
           </div>
         </div>
 
-        {/* Booking Summary */}
-        {selectedTime && selectedCourtData && (
-          <div className="mt-6 p-4 bg-gray-50 rounded-lg">
-            <h3 className="text-lg mb-3">Booking Summary</h3>
-            <div className="grid md:grid-cols-2 gap-4">
-              <div className="space-y-2">
-                <div className="flex justify-between">
-                  <span className="text-gray-600">Court:</span>
-                  <span>{getCourtDisplayName(selectedCourtData.id, selectedCourtData.name)}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-gray-600">Date:</span>
-                  <span>{format(selectedDate, 'MMM dd, yyyy')}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-gray-600">Time:</span>
-                  <span>{selectedTime} ({duration} min)</span>
-                </div>
-              </div>
-              <div className="space-y-2">
-                <div className="flex justify-between">
-                  <span className="text-gray-600">Type:</span>
-                  <span className="capitalize">{bookingType.replace('_', ' ')}</span>
-                </div>
-                <div className="flex justify-between text-lg">
-                  <span className="text-gray-600">Total:</span>
-                  <span className="flex items-center gap-1">
-                    ₱{calculatePrice().toFixed(2)}
-                  </span>
-                </div>
-              </div>
-            </div>
-
-            <button
-              onClick={handleBooking}
-              className="w-full mt-4 bg-teal-600 text-white py-3 rounded-lg hover:bg-teal-700 transition-colors flex items-center justify-center gap-2"
-            >
-              <CheckCircle className="w-5 h-5" />
-              Proceed to Payment
-            </button>
-          </div>
-        )}
+        <div className="flex flex-col-reverse gap-3 pt-6 sm:flex-row sm:justify-end">
+          <button
+            type="button"
+            onClick={() => navigate('/booking')}
+            className="h-11 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 px-6 text-slate-800 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-700 sm:w-auto"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={handleProceed}
+            className="h-11 rounded-lg bg-teal-600 px-6 text-white hover:bg-teal-700 sm:w-auto"
+          >
+            Proceed to Payment
+          </button>
+        </div>
       </div>
-
-      {/* Court Information */}
-      {selectedCourtData && (
-        <div className="bg-white rounded-xl shadow-lg p-6">
-          <h3 className="text-lg mb-4">Court Information</h3>
-          <div className="grid md:grid-cols-4 gap-4">
-            <div className="p-4 bg-blue-50 rounded-lg">
-              <div className="text-sm text-blue-600 mb-1">Court</div>
-              <div>{getCourtDisplayName(selectedCourtData.id, selectedCourtData.name)}</div>
-            </div>
-            <div className="p-4 bg-green-50 rounded-lg">
-              <div className="text-sm text-green-600 mb-1">Surface</div>
-              <div className="capitalize">{selectedCourtData.surfaceType}</div>
-            </div>
-            <div className="p-4 bg-purple-50 rounded-lg">
-              <div className="text-sm text-purple-600 mb-1">Standard Rate</div>
-              <div>₱{selectedCourtData.hourlyRate}/hr</div>
-            </div>
-            <div className="p-4 bg-orange-50 rounded-lg">
-              <div className="text-sm text-orange-600 mb-1">Peak Rate</div>
-              <div>₱{selectedCourtData.peakHourRate || selectedCourtData.hourlyRate}/hr</div>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 }

@@ -46,7 +46,7 @@ function DashboardLayout() {
   };
 
   return (
-    <div className="flex min-h-screen bg-[#1F3A3C] transition-colors duration-300">
+    <div className="flex min-h-screen bg-slate-50 dark:bg-slate-950 transition-colors duration-300">
       <Sidebar 
         currentView={currentView} 
         onViewChange={handleViewChange} 
@@ -128,3 +128,4 @@ export default function App() {
     </ThemeProvider>
   );
 }
+

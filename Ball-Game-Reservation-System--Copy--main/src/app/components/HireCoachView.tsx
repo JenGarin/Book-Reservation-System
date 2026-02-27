@@ -36,9 +36,9 @@ export function HireCoachView() {
       : `${coach.skillLevel || 'General'} level coaching`;
   const getVerificationBadge = (coach: (typeof coaches)[number]) => {
     const status = coach.coachVerificationStatus || 'unverified';
-    if (status === 'verified') return 'bg-emerald-100 text-emerald-700';
-    if (status === 'pending') return 'bg-amber-100 text-amber-700';
-    return 'bg-slate-200 text-slate-700';
+    if (status === 'verified') return 'bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-300';
+    if (status === 'pending') return 'bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-300';
+    return 'bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-300';
   };
   const getCoachInitials = (name: string) =>
     name
@@ -147,13 +147,13 @@ export function HireCoachView() {
       return (
         <div className="min-h-screen bg-transparent space-y-6 animate-in fade-in duration-500">
           <div>
-            <h1 className="text-2xl font-bold text-white">Hire a Coach</h1>
-            <p className="text-slate-200">Coach not found. Please select a coach profile again.</p>
+            <h1 className="text-2xl font-bold text-slate-900 dark:text-white">Hire a Coach</h1>
+            <p className="text-slate-600 dark:text-slate-300">Coach not found. Please select a coach profile again.</p>
           </div>
           <button
             type="button"
             onClick={() => navigate('/hire-coach')}
-            className="inline-flex items-center gap-2 rounded-xl bg-white text-slate-900 px-4 py-2 font-semibold"
+            className="inline-flex items-center gap-2 rounded-xl bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 px-4 py-2 font-semibold"
           >
             <ArrowLeft size={16} />
             Back to Coach Profiles
@@ -166,13 +166,13 @@ export function HireCoachView() {
       <div className="min-h-screen bg-transparent space-y-6 animate-in fade-in duration-500">
         <div className="flex items-center justify-between gap-4">
           <div>
-            <h1 className="text-2xl font-bold text-white">Reservation Card</h1>
-            <p className="text-slate-200">Finalize your coach session details.</p>
+            <h1 className="text-2xl font-bold text-slate-900 dark:text-white">Reservation Card</h1>
+            <p className="text-slate-600 dark:text-slate-300">Finalize your coach session details.</p>
           </div>
           <button
             type="button"
             onClick={() => navigate('/hire-coach')}
-            className="inline-flex items-center gap-2 rounded-xl bg-white text-slate-900 px-4 py-2 font-semibold hover:bg-slate-100"
+            className="inline-flex items-center gap-2 rounded-xl bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 px-4 py-2 font-semibold hover:bg-slate-100 dark:hover:bg-slate-700"
           >
             <ArrowLeft size={16} />
             Back to Profiles
@@ -180,9 +180,9 @@ export function HireCoachView() {
         </div>
 
         <div className="grid grid-cols-1 xl:grid-cols-[0.95fr,1.05fr] gap-6">
-          <section className="bg-white rounded-2xl border border-slate-200 p-6 shadow-sm">
+          <section className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 p-6 shadow-sm">
             <div className="flex items-start gap-4">
-              <div className="h-20 w-20 rounded-2xl overflow-hidden bg-slate-100 border border-slate-200 flex items-center justify-center text-lg font-bold text-slate-700">
+              <div className="h-20 w-20 rounded-2xl overflow-hidden bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 flex items-center justify-center text-lg font-bold text-slate-700 dark:text-slate-300">
                 {selectedCoach.avatar ? (
                   <img src={selectedCoach.avatar} alt={selectedCoach.name} className="h-full w-full object-cover" />
                 ) : (
@@ -190,52 +190,52 @@ export function HireCoachView() {
                 )}
               </div>
               <div>
-                <h2 className="text-lg font-semibold text-slate-900">{selectedCoach.name}</h2>
-                <p className="text-sm text-slate-500">{selectedCoach.email}</p>
-                <p className="text-sm text-slate-600 mt-1">{selectedCoach.phone || 'Phone not provided'}</p>
+                <h2 className="text-lg font-semibold text-slate-900 dark:text-slate-100">{selectedCoach.name}</h2>
+                <p className="text-sm text-slate-500 dark:text-slate-400">{selectedCoach.email}</p>
+                <p className="text-sm text-slate-600 dark:text-slate-400 mt-1">{selectedCoach.phone || 'Phone not provided'}</p>
                 <span className={`mt-2 inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-semibold uppercase ${getVerificationBadge(selectedCoach)}`}>
                   <BadgeCheck className="w-3.5 h-3.5" />
                   {selectedCoach.coachVerificationStatus || 'unverified'}
                 </span>
               </div>
             </div>
-            <p className="mt-4 text-sm text-slate-700 leading-6">
+            <p className="mt-4 text-sm text-slate-700 dark:text-slate-300 leading-6">
               {selectedCoach.coachProfile || 'No profile provided yet.'}
             </p>
             <div className="mt-4 grid grid-cols-2 gap-3">
-              <div className="rounded-xl border border-slate-200 p-3 bg-slate-50">
-                <p className="text-xs uppercase tracking-wide text-slate-500">Skill Level</p>
-                <p className="text-sm font-semibold text-slate-900 capitalize">{selectedCoach.skillLevel || 'General'}</p>
+              <div className="rounded-xl border border-slate-200 dark:border-slate-700 p-3 bg-slate-50 dark:bg-slate-800">
+                <p className="text-xs uppercase tracking-wide text-slate-500 dark:text-slate-400">Skill Level</p>
+                <p className="text-sm font-semibold text-slate-900 dark:text-slate-100 capitalize">{selectedCoach.skillLevel || 'General'}</p>
               </div>
-              <div className="rounded-xl border border-slate-200 p-3 bg-slate-50">
-                <p className="text-xs uppercase tracking-wide text-slate-500">Completed Sessions</p>
-                <p className="text-sm font-semibold text-slate-900">{coachStats[selectedCoach.id]?.completed || 0}</p>
+              <div className="rounded-xl border border-slate-200 dark:border-slate-700 p-3 bg-slate-50 dark:bg-slate-800">
+                <p className="text-xs uppercase tracking-wide text-slate-500 dark:text-slate-400">Completed Sessions</p>
+                <p className="text-sm font-semibold text-slate-900 dark:text-slate-100">{coachStats[selectedCoach.id]?.completed || 0}</p>
               </div>
             </div>
-            <div className="mt-3 rounded-xl border border-slate-200 p-3 bg-slate-50">
-              <p className="text-xs uppercase tracking-wide text-slate-500">Reviews</p>
+            <div className="mt-3 rounded-xl border border-slate-200 dark:border-slate-700 p-3 bg-slate-50 dark:bg-slate-800">
+              <p className="text-xs uppercase tracking-wide text-slate-500 dark:text-slate-400">Reviews</p>
               <div className="mt-1 flex items-center gap-2">
                 <div className="inline-flex items-center gap-1">{renderStars(getCoachRating(selectedCoach.id))}</div>
-                <span className="text-sm font-semibold text-slate-900">{getCoachRating(selectedCoach.id).toFixed(1)}</span>
+                <span className="text-sm font-semibold text-slate-900 dark:text-slate-100">{getCoachRating(selectedCoach.id).toFixed(1)}</span>
               </div>
             </div>
-            <div className="mt-3 rounded-xl border border-slate-200 p-3 bg-slate-50">
-              <p className="text-xs uppercase tracking-wide text-slate-500">Expertise</p>
-              <p className="text-sm text-slate-800 mt-1">{getCoachExpertiseLabel(selectedCoach)}</p>
+            <div className="mt-3 rounded-xl border border-slate-200 dark:border-slate-700 p-3 bg-slate-50 dark:bg-slate-800">
+              <p className="text-xs uppercase tracking-wide text-slate-500 dark:text-slate-400">Expertise</p>
+              <p className="text-sm text-slate-800 dark:text-slate-300 mt-1">{getCoachExpertiseLabel(selectedCoach)}</p>
             </div>
           </section>
 
-          <section className="bg-white rounded-2xl border border-slate-200 p-6 shadow-sm">
+          <section className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 p-6 shadow-sm">
             <form onSubmit={handleReserveCoach} className="space-y-3">
               <label className="space-y-1 block">
-                <span className="text-sm font-medium text-slate-700">Select Court</span>
+                <span className="text-sm font-medium text-slate-700 dark:text-slate-300">Select Court</span>
                 <select
                   value={selectedCourtId}
                   onChange={(e) => {
                     setSelectedCourtId(e.target.value);
                     setSelectedTime('');
                   }}
-                  className="w-full rounded-lg border border-slate-200 px-3 py-2"
+                  className="w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 px-3 py-2"
                   required
                 >
                   {courts.map((court) => (
@@ -248,7 +248,7 @@ export function HireCoachView() {
 
               <div className="grid grid-cols-2 gap-3">
                 <label className="space-y-1 block">
-                  <span className="text-sm font-medium text-slate-700">Date</span>
+                  <span className="text-sm font-medium text-slate-700 dark:text-slate-300">Date</span>
                   <input
                     type="date"
                     value={selectedDate}
@@ -257,17 +257,17 @@ export function HireCoachView() {
                       setSelectedDate(e.target.value);
                       setSelectedTime('');
                     }}
-                    className="w-full rounded-lg border border-slate-200 px-3 py-2"
+                    className="w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 px-3 py-2"
                     required
                   />
                 </label>
 
                 <label className="space-y-1 block">
-                  <span className="text-sm font-medium text-slate-700">Duration</span>
+                  <span className="text-sm font-medium text-slate-700 dark:text-slate-300">Duration</span>
                   <select
                     value={duration}
                     onChange={(e) => setDuration(Number(e.target.value))}
-                    className="w-full rounded-lg border border-slate-200 px-3 py-2"
+                    className="w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 px-3 py-2"
                   >
                     <option value={60}>1 hour</option>
                     <option value={90}>1.5 hours</option>
@@ -277,11 +277,11 @@ export function HireCoachView() {
               </div>
 
               <label className="space-y-1 block">
-                <span className="text-sm font-medium text-slate-700">Available Time Slots</span>
+                <span className="text-sm font-medium text-slate-700 dark:text-slate-300">Available Time Slots</span>
                 <select
                   value={selectedTime}
                   onChange={(e) => setSelectedTime(e.target.value)}
-                  className="w-full rounded-lg border border-slate-200 px-3 py-2"
+                  className="w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 px-3 py-2"
                   required
                 >
                   <option value="">Choose a time</option>
@@ -294,12 +294,12 @@ export function HireCoachView() {
               </label>
 
               <label className="space-y-1 block">
-                <span className="text-sm font-medium text-slate-700">Notes for Coach (optional)</span>
+                <span className="text-sm font-medium text-slate-700 dark:text-slate-300">Notes for Coach (optional)</span>
                 <textarea
                   rows={3}
                   value={notes}
                   onChange={(e) => setNotes(e.target.value)}
-                  className="w-full rounded-lg border border-slate-200 px-3 py-2 resize-none"
+                  className="w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 px-3 py-2 resize-none"
                   placeholder="Training goals, skills to focus on, etc."
                 />
               </label>
@@ -321,14 +321,14 @@ export function HireCoachView() {
   return (
     <div className="min-h-screen bg-transparent space-y-6 animate-in fade-in duration-500">
       <div>
-        <h1 className="text-2xl font-bold text-white">Hire a Coach</h1>
-        <p className="text-slate-200">Browse professional coach profiles and select one to proceed to reservation.</p>
+        <h1 className="text-2xl font-bold text-slate-900 dark:text-white">Hire a Coach</h1>
+        <p className="text-slate-600 dark:text-slate-300">Browse professional coach profiles and select one to proceed to reservation.</p>
       </div>
 
-      <section className="bg-white rounded-2xl border border-slate-200 p-6 shadow-sm">
+      <section className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 p-6 shadow-sm">
         <div className="flex items-center justify-between mb-4">
-          <h2 className="text-lg font-semibold text-slate-900">Coach Profiles</h2>
-          <p className="text-sm text-slate-500">{coaches.length} coach{coaches.length !== 1 ? 'es' : ''} available</p>
+          <h2 className="text-lg font-semibold text-slate-900 dark:text-slate-100">Coach Profiles</h2>
+          <p className="text-sm text-slate-500 dark:text-slate-400">{coaches.length} coach{coaches.length !== 1 ? 'es' : ''} available</p>
         </div>
 
         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
@@ -337,10 +337,10 @@ export function HireCoachView() {
             return (
               <article
                 key={coach.id}
-                className="rounded-2xl border border-slate-200 p-5 shadow-sm bg-white hover:border-slate-300 transition-all"
+                className="rounded-2xl border border-slate-200 dark:border-slate-700 p-5 shadow-sm bg-white dark:bg-slate-900 hover:border-slate-300 dark:hover:border-slate-600 transition-all"
               >
                 <div className="flex items-start gap-3">
-                  <div className="h-14 w-14 rounded-xl overflow-hidden bg-slate-100 border border-slate-200 flex items-center justify-center text-sm font-bold text-slate-700">
+                  <div className="h-14 w-14 rounded-xl overflow-hidden bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 flex items-center justify-center text-sm font-bold text-slate-700 dark:text-slate-300">
                     {coach.avatar ? (
                       <img src={coach.avatar} alt={coach.name} className="h-full w-full object-cover" />
                     ) : (
@@ -348,9 +348,9 @@ export function HireCoachView() {
                     )}
                   </div>
                   <div className="min-w-0">
-                    <p className="text-base font-semibold text-slate-900 truncate">{coach.name}</p>
-                    <p className="text-sm text-slate-500 truncate">{coach.email}</p>
-                    <p className="text-sm text-slate-500 truncate">{coach.phone || 'No phone listed'}</p>
+                    <p className="text-base font-semibold text-slate-900 dark:text-slate-100 truncate">{coach.name}</p>
+                    <p className="text-sm text-slate-500 dark:text-slate-400 truncate">{coach.email}</p>
+                    <p className="text-sm text-slate-500 dark:text-slate-400 truncate">{coach.phone || 'No phone listed'}</p>
                     <span className={`mt-1 inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold uppercase ${getVerificationBadge(coach)}`}>
                       <BadgeCheck className="w-3 h-3" />
                       {coach.coachVerificationStatus || 'unverified'}
@@ -358,37 +358,37 @@ export function HireCoachView() {
                   </div>
                 </div>
 
-                <p className="mt-3 text-sm text-slate-700 leading-6 line-clamp-3">
+                <p className="mt-3 text-sm text-slate-700 dark:text-slate-300 leading-6 line-clamp-3">
                   {coach.coachProfile || 'No profile provided yet.'}
                 </p>
 
                 <div className="mt-3">
-                  <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Expertise</p>
-                  <p className="mt-1 text-sm text-slate-700">{getCoachExpertiseLabel(coach)}</p>
+                  <p className="text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Expertise</p>
+                  <p className="mt-1 text-sm text-slate-700 dark:text-slate-300">{getCoachExpertiseLabel(coach)}</p>
                 </div>
 
                 <div className="mt-3 grid grid-cols-2 gap-2">
-                  <div className="rounded-lg bg-slate-50 border border-slate-200 px-2 py-2">
-                    <p className="text-[11px] uppercase tracking-wide text-slate-500">Completed</p>
-                    <p className="text-sm font-semibold text-slate-900">{stats.completed}</p>
+                  <div className="rounded-lg bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 px-2 py-2">
+                    <p className="text-[11px] uppercase tracking-wide text-slate-500 dark:text-slate-400">Completed</p>
+                    <p className="text-sm font-semibold text-slate-900 dark:text-slate-100">{stats.completed}</p>
                   </div>
-                  <div className="rounded-lg bg-slate-50 border border-slate-200 px-2 py-2">
-                    <p className="text-[11px] uppercase tracking-wide text-slate-500">Pending</p>
-                    <p className="text-sm font-semibold text-slate-900">{stats.pending}</p>
+                  <div className="rounded-lg bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 px-2 py-2">
+                    <p className="text-[11px] uppercase tracking-wide text-slate-500 dark:text-slate-400">Pending</p>
+                    <p className="text-sm font-semibold text-slate-900 dark:text-slate-100">{stats.pending}</p>
                   </div>
                 </div>
-                <div className="mt-3 rounded-lg bg-slate-50 border border-slate-200 px-2 py-2">
-                  <p className="text-[11px] uppercase tracking-wide text-slate-500">Reviews</p>
+                <div className="mt-3 rounded-lg bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 px-2 py-2">
+                  <p className="text-[11px] uppercase tracking-wide text-slate-500 dark:text-slate-400">Reviews</p>
                   <div className="mt-1 flex items-center gap-2">
                     <div className="inline-flex items-center gap-1">{renderStars(getCoachRating(coach.id))}</div>
-                    <span className="text-sm font-semibold text-slate-900">{getCoachRating(coach.id).toFixed(1)}</span>
+                    <span className="text-sm font-semibold text-slate-900 dark:text-slate-100">{getCoachRating(coach.id).toFixed(1)}</span>
                   </div>
                 </div>
 
                 <button
                   type="button"
                   onClick={() => navigate(`/hire-coach?mode=reserve&coachId=${coach.id}`)}
-                  className="mt-4 w-full rounded-xl px-3 py-2.5 text-sm font-semibold bg-slate-900 text-white hover:bg-slate-800 transition-colors"
+                  className="mt-4 w-full rounded-xl px-3 py-2.5 text-sm font-semibold bg-slate-900 dark:bg-teal-700 text-white hover:bg-slate-800 dark:hover:bg-teal-600 transition-colors"
                 >
                   Select for Reservation
                 </button>
@@ -398,28 +398,28 @@ export function HireCoachView() {
         </div>
       </section>
 
-      <section className="bg-white rounded-2xl border border-slate-200 p-5 shadow-sm">
-        <h3 className="text-base font-semibold text-slate-900 mb-3">Recent Coach Reservations</h3>
+      <section className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 p-5 shadow-sm">
+        <h3 className="text-base font-semibold text-slate-900 dark:text-slate-100 mb-3">Recent Coach Reservations</h3>
         <div className="space-y-3">
           {myCoachReservations.length === 0 && (
-            <p className="text-sm text-slate-500">No coach reservations yet.</p>
+            <p className="text-sm text-slate-500 dark:text-slate-400">No coach reservations yet.</p>
           )}
           {myCoachReservations.map((booking) => {
             const court = courts.find((c) => c.id === booking.courtId);
             const coach = users.find((u) => u.id === booking.coachId);
             return (
-              <div key={booking.id} className="rounded-lg border border-slate-200 p-3">
-                <p className="text-sm font-semibold text-slate-900">{coach?.name || 'Coach'}</p>
-                <p className="text-xs text-slate-600 inline-flex items-center gap-1">
+              <div key={booking.id} className="rounded-lg border border-slate-200 dark:border-slate-700 p-3 bg-white dark:bg-slate-900">
+                <p className="text-sm font-semibold text-slate-900 dark:text-slate-100">{coach?.name || 'Coach'}</p>
+                <p className="text-xs text-slate-600 dark:text-slate-400 inline-flex items-center gap-1">
                   <MapPin size={12} /> {court?.name || 'Court'}
                 </p>
-                <p className="text-xs text-slate-600 inline-flex items-center gap-1 ml-2">
+                <p className="text-xs text-slate-600 dark:text-slate-400 inline-flex items-center gap-1 ml-2">
                   <Calendar size={12} /> {format(new Date(booking.date), 'MMM dd, yyyy')}
                 </p>
-                <p className="text-xs text-slate-600 inline-flex items-center gap-1 ml-2">
+                <p className="text-xs text-slate-600 dark:text-slate-400 inline-flex items-center gap-1 ml-2">
                   <Clock size={12} /> {booking.startTime}-{booking.endTime}
                 </p>
-                <p className="text-xs mt-2 inline-flex items-center gap-1 px-2 py-1 rounded-full bg-slate-100 text-slate-700">
+                <p className="text-xs mt-2 inline-flex items-center gap-1 px-2 py-1 rounded-full bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300">
                   <Users size={12} /> {booking.status}
                 </p>
               </div>

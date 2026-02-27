@@ -193,58 +193,58 @@ export function CoachPortalView() {
   };
 
   return (
-    <div className="min-h-screen bg-[#dce9ea] rounded-2xl p-4 md:p-6 xl:p-8 space-y-5">
-      <section className="mx-auto max-w-[1320px] bg-[#ced9dc] rounded-3xl border border-slate-300/60 shadow-sm px-5 md:px-7 py-6 flex items-center gap-4 md:gap-5">
-        <div className="w-16 h-16 md:w-20 md:h-20 rounded-full bg-white/70 border border-white/60 flex items-center justify-center overflow-hidden shrink-0">
+    <div className="min-h-screen bg-[#dce9ea] dark:bg-slate-950 rounded-2xl p-4 md:p-6 xl:p-8 space-y-5 transition-colors">
+      <section className="mx-auto max-w-[1320px] bg-[#ced9dc] dark:bg-slate-900 rounded-3xl border border-slate-300/60 dark:border-slate-800 shadow-sm px-5 md:px-7 py-6 flex items-center gap-4 md:gap-5">
+        <div className="w-16 h-16 md:w-20 md:h-20 rounded-full bg-white/70 dark:bg-slate-800 border border-white/60 dark:border-slate-700 flex items-center justify-center overflow-hidden shrink-0">
           <img src="/icon%201.png" alt="Coach Icon" className="w-11 h-11 md:w-14 md:h-14 object-contain" />
         </div>
         <div className="min-w-0">
-          <h1 className="text-2xl md:text-3xl font-bold tracking-tight text-slate-900">Coach Dashboard</h1>
-          <p className="text-slate-700 text-sm md:text-lg mt-1">Manage your training sessions and students</p>
+          <h1 className="text-2xl md:text-3xl font-bold tracking-tight text-slate-900 dark:text-slate-100">Coach Dashboard</h1>
+          <p className="text-slate-700 dark:text-slate-300 text-sm md:text-lg mt-1">Manage your training sessions and students</p>
         </div>
       </section>
 
       <section className="mx-auto max-w-[1320px] grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
-        <article className="rounded-2xl bg-[#cfe6f1] border border-slate-300/60 p-4 md:p-5 shadow-sm min-h-[150px]">
+        <article className="rounded-2xl bg-[#cfe6f1] dark:bg-slate-900 border border-slate-300/60 dark:border-slate-800 p-4 md:p-5 shadow-sm min-h-[150px]">
           <div className="flex items-center justify-between">
-            <h3 className="text-lg md:text-xl font-semibold text-slate-900">Upcoming Sessions</h3>
-            <CalendarDays className="w-5 h-5 md:w-6 md:h-6 text-slate-700" />
+            <h3 className="text-lg md:text-xl font-semibold text-slate-900 dark:text-slate-100">Upcoming Sessions</h3>
+            <CalendarDays className="w-5 h-5 md:w-6 md:h-6 text-slate-700 dark:text-slate-300" />
           </div>
-          <p className="text-3xl md:text-4xl font-bold text-slate-900 mt-6">{upcomingSessions.length}</p>
-          <p className="text-slate-700 text-sm md:text-base">Training sessions scheduled</p>
+          <p className="text-3xl md:text-4xl font-bold text-slate-900 dark:text-slate-100 mt-6">{upcomingSessions.length}</p>
+          <p className="text-slate-700 dark:text-slate-300 text-sm md:text-base">Training sessions scheduled</p>
         </article>
 
-        <article className="rounded-2xl bg-[#d9f0d5] border border-slate-300/60 p-4 md:p-5 shadow-sm min-h-[150px]">
+        <article className="rounded-2xl bg-[#d9f0d5] dark:bg-slate-900 border border-slate-300/60 dark:border-slate-800 p-4 md:p-5 shadow-sm min-h-[150px]">
           <div className="flex items-center justify-between">
-            <h3 className="text-lg md:text-xl font-semibold text-slate-900">Total Students</h3>
-            <Users className="w-5 h-5 md:w-6 md:h-6 text-slate-700" />
+            <h3 className="text-lg md:text-xl font-semibold text-slate-900 dark:text-slate-100">Total Students</h3>
+            <Users className="w-5 h-5 md:w-6 md:h-6 text-slate-700 dark:text-slate-300" />
           </div>
-          <p className="text-3xl md:text-4xl font-bold text-slate-900 mt-6">{totalStudents}</p>
-          <p className="text-slate-700 text-sm md:text-base">Active students</p>
+          <p className="text-3xl md:text-4xl font-bold text-slate-900 dark:text-slate-100 mt-6">{totalStudents}</p>
+          <p className="text-slate-700 dark:text-slate-300 text-sm md:text-base">Active students</p>
         </article>
 
-        <article className="rounded-2xl bg-[#e9d1ec] border border-slate-300/60 p-4 md:p-5 shadow-sm min-h-[150px]">
+        <article className="rounded-2xl bg-[#e9d1ec] dark:bg-slate-900 border border-slate-300/60 dark:border-slate-800 p-4 md:p-5 shadow-sm min-h-[150px]">
           <div className="flex items-center justify-between">
-            <h3 className="text-lg md:text-xl font-semibold text-slate-900">Total Earnings</h3>
-            <PhilippinePeso className="w-5 h-5 md:w-6 md:h-6 text-slate-700" />
+            <h3 className="text-lg md:text-xl font-semibold text-slate-900 dark:text-slate-100">Total Earnings</h3>
+            <PhilippinePeso className="w-5 h-5 md:w-6 md:h-6 text-slate-700 dark:text-slate-300" />
           </div>
-          <p className="text-3xl md:text-4xl font-bold text-slate-900 mt-6">PHP {totalEarnings.toFixed(0)}</p>
-          <p className="text-slate-700 text-sm md:text-base">From all sessions</p>
+          <p className="text-3xl md:text-4xl font-bold text-slate-900 dark:text-slate-100 mt-6">PHP {totalEarnings.toFixed(0)}</p>
+          <p className="text-slate-700 dark:text-slate-300 text-sm md:text-base">From all sessions</p>
         </article>
 
-        <article className="rounded-2xl bg-[#ecdcc5] border border-slate-300/60 p-4 md:p-5 shadow-sm min-h-[150px]">
+        <article className="rounded-2xl bg-[#ecdcc5] dark:bg-slate-900 border border-slate-300/60 dark:border-slate-800 p-4 md:p-5 shadow-sm min-h-[150px]">
           <div className="flex items-center justify-between">
-            <h3 className="text-lg md:text-xl font-semibold text-slate-900">Coach Applications</h3>
-            <BarChart3 className="w-5 h-5 md:w-6 md:h-6 text-slate-700" />
+            <h3 className="text-lg md:text-xl font-semibold text-slate-900 dark:text-slate-100">Coach Applications</h3>
+            <BarChart3 className="w-5 h-5 md:w-6 md:h-6 text-slate-700 dark:text-slate-300" />
           </div>
-          <p className="text-3xl md:text-4xl font-bold text-slate-900 mt-6">{pendingApplications.length}</p>
-          <p className="text-slate-700 text-sm md:text-base">Pending player requests</p>
+          <p className="text-3xl md:text-4xl font-bold text-slate-900 dark:text-slate-100 mt-6">{pendingApplications.length}</p>
+          <p className="text-slate-700 dark:text-slate-300 text-sm md:text-base">Pending player requests</p>
         </article>
       </section>
 
-      <section className="mx-auto max-w-[1320px] rounded-2xl border border-slate-300 bg-white p-5 md:p-6 shadow-sm">
+      <section className="mx-auto max-w-[1320px] rounded-2xl border border-slate-300 dark:border-slate-800 bg-white dark:bg-slate-900 p-5 md:p-6 shadow-sm">
         <div className="flex items-center justify-between gap-3 mb-4">
-          <h2 className="text-2xl md:text-3xl font-semibold text-slate-900">Player Applications</h2>
+          <h2 className="text-2xl md:text-3xl font-semibold text-slate-900 dark:text-slate-100">Player Applications</h2>
           <span className="px-3 py-1 rounded-xl bg-amber-100 text-amber-800 text-sm font-semibold">
             {pendingApplications.length} pending
           </span>
@@ -252,7 +252,7 @@ export function CoachPortalView() {
 
         <div className="space-y-3">
           {pendingApplications.length === 0 && (
-            <p className="text-slate-600 text-base">No pending applications from players.</p>
+            <p className="text-slate-600 dark:text-slate-400 text-base">No pending applications from players.</p>
           )}
 
           {pendingApplications.slice(0, 6).map((application) => {
@@ -261,17 +261,17 @@ export function CoachPortalView() {
             return (
               <article
                 key={application.id}
-                className="rounded-xl border border-slate-200 bg-slate-50 p-4 flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4"
+                className="rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/40 p-4 flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4"
               >
                 <div>
-                  <p className="text-lg font-semibold text-slate-900">{player?.name || 'Player'}</p>
-                  <p className="text-sm text-slate-600">{player?.email || 'No email available'}</p>
-                  <p className="text-sm text-slate-700 mt-2">
+                  <p className="text-lg font-semibold text-slate-900 dark:text-slate-100">{player?.name || 'Player'}</p>
+                  <p className="text-sm text-slate-600 dark:text-slate-400">{player?.email || 'No email available'}</p>
+                  <p className="text-sm text-slate-700 dark:text-slate-300 mt-2">
                     {format(application.date, 'EEE, MMM dd yyyy')} · {application.startTime}-{application.endTime}
                   </p>
-                  <p className="text-sm text-slate-700">{court?.name || 'Court'}</p>
+                  <p className="text-sm text-slate-700 dark:text-slate-300">{court?.name || 'Court'}</p>
                   {application.notes && (
-                    <p className="text-sm text-slate-600 mt-1">Notes: {application.notes}</p>
+                    <p className="text-sm text-slate-600 dark:text-slate-400 mt-1">Notes: {application.notes}</p>
                   )}
                 </div>
                 <div className="flex items-center gap-2">
@@ -295,11 +295,11 @@ export function CoachPortalView() {
       </section>
 
       <section className="mx-auto max-w-[1320px] flex flex-wrap items-center justify-between gap-3">
-        <div className="inline-flex rounded-2xl border border-slate-300/60 bg-[#d7dde0] p-1 shadow-sm flex-wrap">
+        <div className="inline-flex rounded-2xl border border-slate-300/60 dark:border-slate-700 bg-[#d7dde0] dark:bg-slate-900 p-1 shadow-sm flex-wrap">
           <button
             onClick={() => setActiveTab('sessions')}
             className={`px-4 md:px-5 py-2 rounded-xl text-sm md:text-base transition-colors inline-flex items-center gap-2 ${
-              activeTab === 'sessions' ? 'bg-white text-slate-900 font-semibold shadow-sm' : 'text-slate-700'
+              activeTab === 'sessions' ? 'bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 font-semibold shadow-sm' : 'text-slate-700 dark:text-slate-300'
             }`}
           >
             <CalendarDays className="w-4 h-4" />
@@ -308,7 +308,7 @@ export function CoachPortalView() {
           <button
             onClick={() => setActiveTab('students')}
             className={`px-4 md:px-5 py-2 rounded-xl text-sm md:text-base transition-colors inline-flex items-center gap-2 ${
-              activeTab === 'students' ? 'bg-white text-slate-900 font-semibold shadow-sm' : 'text-slate-700'
+              activeTab === 'students' ? 'bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 font-semibold shadow-sm' : 'text-slate-700 dark:text-slate-300'
             }`}
           >
             <Users className="w-4 h-4" />
@@ -317,7 +317,7 @@ export function CoachPortalView() {
           <button
             onClick={() => setActiveTab('schedule')}
             className={`px-4 md:px-5 py-2 rounded-xl text-sm md:text-base transition-colors inline-flex items-center gap-2 ${
-              activeTab === 'schedule' ? 'bg-white text-slate-900 font-semibold shadow-sm' : 'text-slate-700'
+              activeTab === 'schedule' ? 'bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 font-semibold shadow-sm' : 'text-slate-700 dark:text-slate-300'
             }`}
           >
             <Calendar className="w-4 h-4" />
@@ -337,7 +337,7 @@ export function CoachPortalView() {
       {activeTab === 'sessions' && (
         <section className="mx-auto max-w-[1320px] grid grid-cols-1 xl:grid-cols-2 gap-5">
           {sessionCards.length === 0 && (
-            <div className="xl:col-span-2 rounded-2xl border border-slate-300 bg-white p-8 text-center text-slate-600 text-base">
+            <div className="xl:col-span-2 rounded-2xl border border-slate-300 dark:border-slate-800 bg-white dark:bg-slate-900 p-8 text-center text-slate-600 dark:text-slate-400 text-base">
               No upcoming training sessions yet.
             </div>
           )}
@@ -351,52 +351,52 @@ export function CoachPortalView() {
             const courtName = courts.find((c) => c.id === session.courtId)?.name || 'Training Court';
 
             return (
-              <article key={session.id} className="rounded-2xl border border-slate-300 bg-white overflow-hidden shadow-sm">
+              <article key={session.id} className="rounded-2xl border border-slate-300 dark:border-slate-800 bg-white dark:bg-slate-900 overflow-hidden shadow-sm">
                 <img src={meta.image} alt={courtName} className="w-full h-52 object-cover" />
 
                 <div className="p-5 space-y-4">
-                  <h3 className="text-2xl md:text-3xl font-semibold text-slate-900 leading-tight">{courtName}</h3>
+                  <h3 className="text-2xl md:text-3xl font-semibold text-slate-900 dark:text-slate-100 leading-tight">{courtName}</h3>
 
                   <div className="flex items-center gap-3 flex-wrap">
-                    <span className="px-3 py-1 rounded-xl bg-[#b6f0a5] text-slate-900 text-sm md:text-base font-medium">{meta.sport}</span>
-                    <span className="inline-flex items-center gap-1.5 text-slate-700 text-sm md:text-base">
+                    <span className="px-3 py-1 rounded-xl bg-[#b6f0a5] text-slate-900 dark:text-slate-100 text-sm md:text-base font-medium">{meta.sport}</span>
+                    <span className="inline-flex items-center gap-1.5 text-slate-700 dark:text-slate-300 text-sm md:text-base">
                       <MapPin className="w-4 h-4" />
                       {meta.location}
                     </span>
                   </div>
 
                   <div className="grid grid-cols-3 gap-3">
-                    <div className="rounded-xl bg-slate-50 border border-slate-200 p-3">
-                      <p className="text-slate-500 text-xs uppercase inline-flex items-center gap-1">
+                    <div className="rounded-xl bg-slate-50 dark:bg-slate-800/40 border border-slate-200 dark:border-slate-700 p-3">
+                      <p className="text-slate-500 dark:text-slate-400 text-xs uppercase inline-flex items-center gap-1">
                         <Calendar className="w-3.5 h-3.5" />
                         Date
                       </p>
-                      <p className="text-slate-900 text-base md:text-lg font-semibold mt-1">{format(session.date, 'MMM dd')}</p>
-                      <p className="text-slate-700 text-sm">{format(session.date, 'yyyy')}</p>
+                      <p className="text-slate-900 dark:text-slate-100 text-base md:text-lg font-semibold mt-1">{format(session.date, 'MMM dd')}</p>
+                      <p className="text-slate-700 dark:text-slate-300 text-sm">{format(session.date, 'yyyy')}</p>
                     </div>
-                    <div className="rounded-xl bg-slate-50 border border-slate-200 p-3">
-                      <p className="text-slate-500 text-xs uppercase inline-flex items-center gap-1">
+                    <div className="rounded-xl bg-slate-50 dark:bg-slate-800/40 border border-slate-200 dark:border-slate-700 p-3">
+                      <p className="text-slate-500 dark:text-slate-400 text-xs uppercase inline-flex items-center gap-1">
                         <Clock3 className="w-3.5 h-3.5" />
                         Time
                       </p>
-                      <p className="text-slate-900 text-base md:text-lg font-semibold mt-1">{session.startTime}</p>
-                      <p className="text-slate-700 text-sm">{Math.round(session.duration / 60)}h</p>
+                      <p className="text-slate-900 dark:text-slate-100 text-base md:text-lg font-semibold mt-1">{session.startTime}</p>
+                      <p className="text-slate-700 dark:text-slate-300 text-sm">{Math.round(session.duration / 60)}h</p>
                     </div>
-                    <div className="rounded-xl bg-slate-50 border border-slate-200 p-3">
-                      <p className="text-slate-500 text-xs uppercase inline-flex items-center gap-1">
+                    <div className="rounded-xl bg-slate-50 dark:bg-slate-800/40 border border-slate-200 dark:border-slate-700 p-3">
+                      <p className="text-slate-500 dark:text-slate-400 text-xs uppercase inline-flex items-center gap-1">
                         <UserCheck className="w-3.5 h-3.5" />
                         Students
                       </p>
-                      <p className="text-slate-900 text-base md:text-lg font-semibold mt-1">{getSessionStudentIds(session).length}/{session.maxPlayers || 4}</p>
-                      <p className="text-slate-700 text-sm">enrolled</p>
+                      <p className="text-slate-900 dark:text-slate-100 text-base md:text-lg font-semibold mt-1">{getSessionStudentIds(session).length}/{session.maxPlayers || 4}</p>
+                      <p className="text-slate-700 dark:text-slate-300 text-sm">enrolled</p>
                     </div>
                   </div>
 
-                  <p className="text-slate-600 text-sm md:text-base min-h-[44px]">
+                  <p className="text-slate-600 dark:text-slate-400 text-sm md:text-base min-h-[44px]">
                     {session.notes || 'Training session details and focus points can be updated in session manager.'}
                   </p>
 
-                  <div className="pt-3 border-t border-slate-200 flex items-center justify-between">
+                  <div className="pt-3 border-t border-slate-200 dark:border-slate-700 flex items-center justify-between">
                     <div className="text-xl md:text-2xl font-semibold text-emerald-700">PHP {session.amount.toFixed(0)}</div>
                     <div className="flex items-center gap-2">
                       <button
@@ -404,7 +404,7 @@ export function CoachPortalView() {
                         className="w-9 h-9 rounded-xl bg-slate-100 hover:bg-slate-200 inline-flex items-center justify-center"
                         aria-label="Edit session"
                       >
-                        <Pencil className="w-4 h-4 text-slate-700" />
+                        <Pencil className="w-4 h-4 text-slate-700 dark:text-slate-300" />
                       </button>
                       <button
                         onClick={() => navigate('/coach-sessions')}
@@ -425,43 +425,43 @@ export function CoachPortalView() {
       {activeTab === 'students' && (
         <section className="mx-auto max-w-[1320px] grid grid-cols-1 xl:grid-cols-2 gap-5">
           {studentCards.length === 0 && (
-            <div className="xl:col-span-2 rounded-2xl border border-slate-300 bg-white p-8 text-center text-slate-600 text-base">
+            <div className="xl:col-span-2 rounded-2xl border border-slate-300 dark:border-slate-800 bg-white dark:bg-slate-900 p-8 text-center text-slate-600 dark:text-slate-400 text-base">
               No students enrolled yet.
             </div>
           )}
 
           {studentCards.map((student, index) => (
-            <article key={student.id} className="rounded-2xl border border-slate-300 bg-white p-5 md:p-6 shadow-sm space-y-5 min-h-[330px]">
+            <article key={student.id} className="rounded-2xl border border-slate-300 dark:border-slate-800 bg-white dark:bg-slate-900 p-5 md:p-6 shadow-sm space-y-5 min-h-[330px]">
               <div className="flex items-center gap-4">
-                <div className="w-14 h-14 md:w-16 md:h-16 rounded-full border-2 border-slate-300 bg-slate-100 overflow-hidden flex items-center justify-center shrink-0">
+                <div className="w-14 h-14 md:w-16 md:h-16 rounded-full border-2 border-slate-300 dark:border-slate-700 bg-slate-100 dark:bg-slate-800 overflow-hidden flex items-center justify-center shrink-0">
                   {student.avatar ? (
                     <img src={student.avatar} alt={student.name} className="w-full h-full object-cover" />
                   ) : (
-                    <UserRound className="w-8 h-8 text-slate-500" />
+                    <UserRound className="w-8 h-8 text-slate-500 dark:text-slate-400" />
                   )}
                 </div>
                 <div className="min-w-0">
-                  <h3 className="text-2xl md:text-3xl font-semibold text-slate-900 leading-tight truncate">{student.name}</h3>
-                  <p className="text-slate-700 text-sm md:text-base truncate">{student.email}</p>
+                  <h3 className="text-2xl md:text-3xl font-semibold text-slate-900 dark:text-slate-100 leading-tight truncate">{student.name}</h3>
+                  <p className="text-slate-700 dark:text-slate-300 text-sm md:text-base truncate">{student.email}</p>
                 </div>
               </div>
 
               <div className="space-y-2.5">
                 <div className="flex items-center justify-between gap-4">
-                  <span className="text-base md:text-lg text-slate-800">Sport:</span>
-                  <span className="px-3 py-1 rounded-xl bg-[#b6f0a5] text-slate-900 text-sm md:text-base font-semibold">{student.primarySport}</span>
+                  <span className="text-base md:text-lg text-slate-800 dark:text-slate-300">Sport:</span>
+                  <span className="px-3 py-1 rounded-xl bg-[#b6f0a5] text-slate-900 dark:text-slate-100 text-sm md:text-base font-semibold">{student.primarySport}</span>
                 </div>
                 <div className="flex items-center justify-between gap-4">
-                  <span className="text-base md:text-lg text-slate-800">Level:</span>
-                  <span className="px-3 py-1 rounded-xl bg-slate-100 border border-slate-300 text-slate-800 text-sm md:text-base font-semibold capitalize">{student.level}</span>
+                  <span className="text-base md:text-lg text-slate-800 dark:text-slate-300">Level:</span>
+                  <span className="px-3 py-1 rounded-xl bg-slate-100 border border-slate-300 text-slate-800 dark:text-slate-300 text-sm md:text-base font-semibold capitalize">{student.level}</span>
                 </div>
                 <div className="flex items-center justify-between gap-4">
-                  <span className="text-base md:text-lg text-slate-800">Sessions:</span>
-                  <span className="text-base md:text-lg font-semibold text-slate-900">{student.sessions}</span>
+                  <span className="text-base md:text-lg text-slate-800 dark:text-slate-300">Sessions:</span>
+                  <span className="text-base md:text-lg font-semibold text-slate-900 dark:text-slate-100">{student.sessions}</span>
                 </div>
                 <div className="flex items-center justify-between gap-4">
-                  <span className="text-base md:text-lg text-slate-800">Total Paid:</span>
-                  <span className="text-base md:text-lg font-semibold text-slate-900">PHP {student.totalPaid.toFixed(0)}</span>
+                  <span className="text-base md:text-lg text-slate-800 dark:text-slate-300">Total Paid:</span>
+                  <span className="text-base md:text-lg font-semibold text-slate-900 dark:text-slate-100">PHP {student.totalPaid.toFixed(0)}</span>
                 </div>
               </div>
 
@@ -469,7 +469,7 @@ export function CoachPortalView() {
                 <div className="w-full h-3 bg-[#ddd3eb] rounded-full overflow-hidden">
                   <div className="h-full bg-[#1f5a5f] rounded-full" style={{ width: `${student.progress}%` }} />
                 </div>
-                <p className="text-slate-600 text-xs md:text-sm mt-2">{student.progress}% training progress • Student #{index + 1}</p>
+                <p className="text-slate-600 dark:text-slate-400 text-xs md:text-sm mt-2">{student.progress}% training progress • Student #{index + 1}</p>
               </div>
             </article>
           ))}
@@ -477,19 +477,19 @@ export function CoachPortalView() {
       )}
 
       {activeTab === 'schedule' && (
-        <section className="mx-auto max-w-[1320px] rounded-2xl border border-slate-300 bg-white p-5 md:p-6 shadow-sm">
-          <h2 className="text-2xl md:text-3xl font-semibold text-slate-900 mb-4">Upcoming Schedule</h2>
+        <section className="mx-auto max-w-[1320px] rounded-2xl border border-slate-300 dark:border-slate-800 bg-white dark:bg-slate-900 p-5 md:p-6 shadow-sm">
+          <h2 className="text-2xl md:text-3xl font-semibold text-slate-900 dark:text-slate-100 mb-4">Upcoming Schedule</h2>
           <div className="space-y-3">
-            {scheduleCards.length === 0 && <p className="text-slate-600 text-base">No schedule yet.</p>}
+            {scheduleCards.length === 0 && <p className="text-slate-600 dark:text-slate-400 text-base">No schedule yet.</p>}
             {scheduleCards.map((session) => {
               const courtName = courts.find((c) => c.id === session.courtId)?.name || 'Training Court';
               return (
-                <div key={session.id} className="rounded-xl border border-slate-200 bg-slate-50 p-4 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+                <div key={session.id} className="rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/40 p-4 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
                   <div>
-                    <p className="text-slate-900 text-lg md:text-xl font-semibold">{courtName}</p>
-                    <p className="text-slate-700 text-sm md:text-base">{format(session.date, 'EEEE, MMM dd yyyy')}</p>
+                    <p className="text-slate-900 dark:text-slate-100 text-lg md:text-xl font-semibold">{courtName}</p>
+                    <p className="text-slate-700 dark:text-slate-300 text-sm md:text-base">{format(session.date, 'EEEE, MMM dd yyyy')}</p>
                   </div>
-                  <div className="inline-flex items-center gap-2 text-slate-800 text-sm md:text-base font-medium">
+                  <div className="inline-flex items-center gap-2 text-slate-800 dark:text-slate-300 text-sm md:text-base font-medium">
                     <Calendar className="w-4 h-4" />
                     {session.startTime} ({Math.round(session.duration / 60)}h)
                   </div>
@@ -502,3 +502,5 @@ export function CoachPortalView() {
     </div>
   );
 }
+
+

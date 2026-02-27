@@ -36,7 +36,7 @@ interface SidebarProps {
 }
 
 export function Sidebar({ currentView, onViewChange, role }: SidebarProps) {
-  const { theme, setTheme } = useTheme();
+  const { resolvedTheme, setTheme } = useTheme();
   const { notifications, currentUser, logout, bookings } = useApp();
   const navigate = useNavigate();
   const [isLogoutConfirmOpen, setIsLogoutConfirmOpen] = React.useState(false);
@@ -70,7 +70,7 @@ export function Sidebar({ currentView, onViewChange, role }: SidebarProps) {
   const filteredItems = menuItems.filter(item => item.roles.includes(role));
 
   return (
-    <aside className="w-64 bg-gray-50 border-r border-slate-200 h-screen flex flex-col fixed left-0 top-0 transition-colors duration-300 overflow-hidden">
+    <aside className="w-64 bg-slate-50 dark:bg-slate-900 border-r border-slate-200 dark:border-slate-800 h-screen flex flex-col fixed left-0 top-0 transition-colors duration-300 overflow-hidden">
       <div className="p-6 flex items-center justify-center">
         <img src="/ventra-logo.png" alt="Ventra" className="h-24 w-auto" />
       </div>
@@ -131,13 +131,13 @@ export function Sidebar({ currentView, onViewChange, role }: SidebarProps) {
         })}
       </nav>
 
-      <div className="p-4 border-t border-slate-200 dark:border-slate-800 space-y-4 shrink-0 bg-gray-50">
+      <div className="p-4 border-t border-slate-200 dark:border-slate-800 space-y-4 shrink-0 bg-slate-50 dark:bg-slate-900">
         <button
-          onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
+          onClick={() => setTheme(resolvedTheme === 'dark' ? 'light' : 'dark')}
           className="w-full flex items-center gap-3 px-4 py-3 rounded-lg text-sm font-medium text-slate-600 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors"
         >
-          {theme === 'dark' ? <Sun size={20} /> : <Moon size={20} />}
-          {theme === 'dark' ? 'Light Mode' : 'Dark Mode'}
+          {resolvedTheme === 'dark' ? <Sun size={20} /> : <Moon size={20} />}
+          {resolvedTheme === 'dark' ? 'Light Mode' : 'Dark Mode'}
         </button>
 
         <div className="bg-slate-50 dark:bg-slate-800 rounded-xl p-4 flex items-center gap-3">
@@ -186,3 +186,4 @@ export function Sidebar({ currentView, onViewChange, role }: SidebarProps) {
     </aside>
   );
 }
+

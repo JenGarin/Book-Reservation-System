@@ -1,15 +1,13 @@
--- Ventra relational schema for API v1.
--- Run this file in Supabase SQL Editor.
+-- Ventra relational schema migration.
+-- Same content as supabase_schema.sql for CLI-based migration workflows.
 
 create extension if not exists pgcrypto;
 
--- Keep existing KV store table for legacy compatibility.
 create table if not exists public.kv_store_ce0562bb (
   key text primary key,
   value jsonb not null
 );
 
--- Core users table used by API (text IDs to support seeded ids like admin-1, coach-1).
 create table if not exists public.app_users (
   id text primary key,
   email text not null unique,
@@ -163,7 +161,6 @@ create table if not exists public.payment_transactions (
   paid_at timestamptz
 );
 
--- Indexes
 create index if not exists idx_app_users_role on public.app_users(role);
 create index if not exists idx_bookings_user_id on public.bookings(user_id);
 create index if not exists idx_bookings_court_date on public.bookings(court_id, date);
@@ -180,7 +177,6 @@ create index if not exists idx_payment_transactions_booking on public.payment_tr
 create index if not exists idx_payment_transactions_user on public.payment_transactions(user_id, created_at desc);
 create index if not exists idx_payment_transactions_status on public.payment_transactions(status, created_at desc);
 
--- Updated-at trigger helper
 create or replace function public.set_updated_at()
 returns trigger
 language plpgsql
@@ -216,19 +212,11 @@ create trigger trg_coach_applications_updated_at
 before update on public.coach_applications
 for each row execute function public.set_updated_at();
 
--- Seed users
 insert into public.app_users (id, email, name, role, phone, skill_level)
 values
   ('admin-1', 'admin@court.com', 'Admin User', 'admin', '123-456-7890', 'expert'),
   ('staff-1', 'staff@court.com', 'Staff Member', 'staff', '123-456-7890', 'advanced'),
-  (
-    'coach-1',
-    'coach@court.com',
-    'Coach Mike',
-    'coach',
-    '123-456-7890',
-    'expert'
-  ),
+  ('coach-1', 'coach@court.com', 'Coach Mike', 'coach', '123-456-7890', 'expert'),
   ('player-1', 'player@court.com', 'Alex Johnson', 'player', '123-456-7890', 'intermediate')
 on conflict (id) do update
 set
@@ -248,7 +236,6 @@ set
   coach_verification_submitted_at = timezone('utc', now())
 where id = 'coach-1';
 
--- Seed courts
 insert into public.courts (
   id,
   name,
@@ -275,7 +262,6 @@ set
   status = excluded.status,
   operating_hours = excluded.operating_hours;
 
--- Seed plans
 insert into public.membership_plans (id, name, price, interval, tier, description, features)
 values
   ('m1', 'Basic', 1000, 'month', 'basic', 'Access to outdoor courts', array['Outdoor court access', '7 day advance booking']),
@@ -288,3 +274,4 @@ set
   tier = excluded.tier,
   description = excluded.description,
   features = excluded.features;
+

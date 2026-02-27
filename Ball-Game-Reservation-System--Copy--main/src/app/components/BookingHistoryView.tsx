@@ -71,33 +71,33 @@ export function BookingHistoryView() {
   return (
     <div className="min-h-screen bg-transparent p-4 md:p-6 animate-in fade-in duration-500">
       <div className="max-w-6xl mx-auto space-y-5">
-        <header className="bg-white border border-slate-200 rounded-2xl p-4 md:p-5 flex items-center gap-3 shadow-sm">
+        <header className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-4 md:p-5 flex items-center gap-3 shadow-sm">
           <button
             onClick={() => navigate('/dashboard')}
-            className="p-2 hover:bg-slate-100 rounded-lg transition-colors"
+            className="p-2 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg transition-colors text-slate-700 dark:text-slate-300"
             aria-label="Back to dashboard"
           >
             <ArrowLeft className="w-5 h-5" />
           </button>
           <div>
-            <h1 className="text-2xl font-bold text-slate-900">History</h1>
-            <p className="text-slate-600 text-sm">{allUserBookings.length} total records</p>
+            <h1 className="text-2xl font-bold text-slate-900 dark:text-slate-100">History</h1>
+            <p className="text-slate-600 dark:text-slate-400 text-sm">{allUserBookings.length} total records</p>
           </div>
         </header>
 
-        <section className="rounded-3xl border border-[#7ea39f] bg-[#8eaaa4] p-4 md:p-5 shadow-sm">
-          <div className="rounded-2xl border border-slate-300 bg-white p-4 md:p-5">
+        <section className="rounded-3xl border border-[#7ea39f] dark:border-slate-700 bg-[#8eaaa4] dark:bg-slate-900 p-4 md:p-5 shadow-sm">
+          <div className="rounded-2xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 p-4 md:p-5">
             <div className="mb-4">
-              <h2 className="text-2xl font-bold text-slate-900">Booking History</h2>
-              <p className="text-sm text-slate-600">Past and completed reservations</p>
+              <h2 className="text-2xl font-bold text-slate-900 dark:text-slate-100">Booking History</h2>
+              <p className="text-sm text-slate-600 dark:text-slate-400">Past and completed reservations</p>
             </div>
 
-            <div className="w-full rounded-full bg-slate-200 p-1 mb-4 grid grid-cols-2 gap-1 text-xs font-semibold text-center">
+            <div className="w-full rounded-full bg-slate-200 dark:bg-slate-800 p-1 mb-4 grid grid-cols-2 gap-1 text-xs font-semibold text-center">
               <button
                 type="button"
                 onClick={() => setActiveTab('upcoming')}
                 className={`rounded-full py-1.5 transition-colors ${
-                  activeTab === 'upcoming' ? 'bg-white text-slate-900' : 'text-slate-700 hover:bg-white/70'
+                  activeTab === 'upcoming' ? 'bg-white dark:bg-slate-700 text-slate-900 dark:text-slate-100' : 'text-slate-700 dark:text-slate-300 hover:bg-white/70 dark:hover:bg-slate-700'
                 }`}
               >
                 Upcoming ({upcomingCount})
@@ -106,7 +106,7 @@ export function BookingHistoryView() {
                 type="button"
                 onClick={() => setActiveTab('past')}
                 className={`rounded-full py-1.5 transition-colors ${
-                  activeTab === 'past' ? 'bg-white text-slate-900' : 'text-slate-700 hover:bg-white/70'
+                  activeTab === 'past' ? 'bg-white dark:bg-slate-700 text-slate-900 dark:text-slate-100' : 'text-slate-700 dark:text-slate-300 hover:bg-white/70 dark:hover:bg-slate-700'
                 }`}
               >
                 Past ({pastCount})
@@ -115,7 +115,7 @@ export function BookingHistoryView() {
 
             <div className="space-y-3 max-h-[620px] overflow-y-auto pr-1">
               {displayedBookings.length === 0 && (
-                <div className="rounded-xl border border-slate-200 bg-slate-50 p-6 text-center text-slate-500">
+                <div className="rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 p-6 text-center text-slate-500 dark:text-slate-400">
                   {activeTab === 'upcoming' ? 'No upcoming records.' : 'No past records yet.'}
                 </div>
               )}
@@ -127,12 +127,12 @@ export function BookingHistoryView() {
                 const ratePerHour = court?.hourlyRate || 0;
 
                 return (
-                  <article key={booking.id} className="rounded-2xl border border-slate-300 bg-slate-50 p-4">
+                  <article key={booking.id} className="rounded-2xl border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 p-4">
                     <div className="flex items-start justify-between gap-4">
                       <div>
-                        <h3 className="text-xl font-bold text-slate-900">{court?.name || 'Unknown Court'}</h3>
+                        <h3 className="text-xl font-bold text-slate-900 dark:text-slate-100">{court?.name || 'Unknown Court'}</h3>
                         <div className="flex items-center gap-2 mt-1">
-                          <span className="inline-flex items-center px-3 py-1 rounded-full bg-slate-900 text-white text-xs font-semibold">
+                          <span className="inline-flex items-center px-3 py-1 rounded-full bg-slate-900 dark:bg-slate-700 text-white text-xs font-semibold">
                             {isUpcoming ? 'Upcoming' : 'Past'}
                           </span>
                           <span className={`inline-flex items-center px-2.5 py-1 rounded-full text-[11px] font-bold uppercase ${getStatusColor(booking.status)}`}>
@@ -140,27 +140,27 @@ export function BookingHistoryView() {
                           </span>
                         </div>
                       </div>
-                      <span className="inline-flex items-center px-2 py-1 rounded-full border border-slate-300 bg-white text-xs text-slate-700">
+                      <span className="inline-flex items-center px-2 py-1 rounded-full border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 text-xs text-slate-700 dark:text-slate-300">
                         {meta.sport}
                       </span>
                     </div>
 
-                    <div className="mt-3 text-sm text-slate-700 space-y-1.5">
+                    <div className="mt-3 text-sm text-slate-700 dark:text-slate-300 space-y-1.5">
                       <p className="inline-flex items-center gap-1.5"><MapPin size={13} /> {meta.location}</p>
                       <p className="inline-flex items-center gap-1.5"><Calendar size={13} /> {format(booking.date, 'MMMM dd, yyyy')}</p>
                       <p className="inline-flex items-center gap-1.5"><Clock3 size={13} /> {booking.startTime} - {booking.endTime} ({Math.round(booking.duration / 60)} Hours)</p>
                     </div>
 
                     {booking.notes && (
-                      <p className="mt-3 text-xs text-slate-600 bg-white border border-slate-200 rounded-lg p-2.5">
+                      <p className="mt-3 text-xs text-slate-600 dark:text-slate-400 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg p-2.5">
                         {booking.notes}
                       </p>
                     )}
 
                     <div className="mt-3 flex items-end justify-between gap-3">
                       <div>
-                        <p className="text-sm font-semibold text-slate-700">P{ratePerHour}/hour</p>
-                        <p className="text-2xl font-bold text-slate-900">Total: P{booking.amount.toFixed(0)}</p>
+                        <p className="text-sm font-semibold text-slate-700 dark:text-slate-300">P{ratePerHour}/hour</p>
+                        <p className="text-2xl font-bold text-slate-900 dark:text-slate-100">Total: P{booking.amount.toFixed(0)}</p>
                       </div>
 
                       {booking.status === 'confirmed' && booking.date >= new Date() && (

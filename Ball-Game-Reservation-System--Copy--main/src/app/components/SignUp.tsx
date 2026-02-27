@@ -62,56 +62,56 @@ export function SignUp() {
       }}
     >
       <div className="absolute inset-0 bg-indigo-900/40 backdrop-blur-sm"></div>
-      <div className="bg-white/95 backdrop-blur-xl rounded-2xl shadow-2xl w-full max-w-md p-6 md:p-7 relative z-10 border border-white/50 animate-in fade-in zoom-in-95 duration-500">
+      <div className="bg-[#73b8b4]/50 backdrop-blur-xl rounded-[56px] shadow-[0_20px_60px_rgba(0,0,0,0.38)] w-full max-w-md p-6 md:p-7 relative z-10 border border-black/10 text-slate-900 animate-in fade-in zoom-in-95 duration-500">
         <div className="text-center mb-5">
           <img src="/ventra-logo.png" alt="Ventra" className="h-24 md:h-28 w-auto mx-auto mb-4" />
           <h1 className="text-2xl md:text-3xl text-slate-900 mb-1">Create Account</h1>
-          <p className="text-gray-600">Join us to book your next game</p>
+          <p className="text-slate-800">Join us to book your next game</p>
         </div>
 
         <form onSubmit={handleSubmit} className="space-y-3">
           <div>
-            <label className="block text-sm mb-2">Full Name</label>
+            <label className="block text-sm mb-2 text-slate-900">Full Name</label>
             <div className="relative">
               <input
                 type="text"
                 value={name}
                 onChange={(e) => setName(e.target.value)}
-                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-green-500 pl-10"
+                className="w-full px-4 py-2 border border-slate-400 bg-white/95 rounded-lg shadow-sm text-slate-900 placeholder:text-slate-600 focus:outline-none focus:ring-2 focus:ring-green-500 pl-10"
                 placeholder="John Doe"
                 required
               />
-              <User className="w-5 h-5 text-gray-400 absolute left-3 top-2.5" />
+              <User className="w-5 h-5 text-slate-500 absolute left-3 top-2.5" />
             </div>
           </div>
 
           <div>
-            <label className="block text-sm mb-2">Email</label>
+            <label className="block text-sm mb-2 text-slate-900">Email</label>
             <div className="relative">
               <input
                 type="email"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
-                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-green-500 pl-10"
+                className="w-full px-4 py-2 border border-slate-400 bg-white/95 rounded-lg shadow-sm text-slate-900 placeholder:text-slate-600 focus:outline-none focus:ring-2 focus:ring-green-500 pl-10"
                 placeholder="you@example.com"
                 required
               />
-              <Mail className="w-5 h-5 text-gray-400 absolute left-3 top-2.5" />
+              <Mail className="w-5 h-5 text-slate-500 absolute left-3 top-2.5" />
             </div>
           </div>
 
           <div>
-            <label className="block text-sm mb-2">Password</label>
+            <label className="block text-sm mb-2 text-slate-900">Password</label>
             <div className="relative">
               <input
                 type={showPassword ? 'text' : 'password'}
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
-                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-green-500 pl-10 pr-10"
+                className="w-full px-4 py-2 border border-slate-400 bg-white/95 rounded-lg shadow-sm text-slate-900 placeholder:text-slate-600 focus:outline-none focus:ring-2 focus:ring-green-500 pl-10 pr-10"
                 placeholder="Enter your password"
                 required
               />
-              <Lock className="w-5 h-5 text-gray-400 absolute left-3 top-2.5" />
+              <Lock className="w-5 h-5 text-slate-500 absolute left-3 top-2.5" />
               <button
                 type="button"
                 className="absolute right-2 top-2 text-gray-500"
@@ -134,14 +134,14 @@ export function SignUp() {
               />
             </div>
             <label htmlFor="terms" className="text-sm text-gray-600">
-              I agree to the <a href="#" className="text-green-600 hover:underline">Terms of Service</a> and <a href="#" className="text-green-600 hover:underline">Privacy Policy</a>
+              I agree to the <a href="#" className="text-indigo-700 font-medium hover:text-indigo-900 hover:underline">Terms of Service</a> and <a href="#" className="text-indigo-700 font-medium hover:text-indigo-900 hover:underline">Privacy Policy</a>
             </label>
           </div>
 
           <button
             type="submit"
             disabled={isLoading}
-            className="w-full bg-green-600 text-white py-2.5 rounded-lg hover:bg-green-700 transition-colors flex items-center justify-center gap-2 disabled:opacity-50 mt-4"
+            className="w-full bg-green-600 text-white py-2.5 rounded-lg shadow-md hover:shadow-lg hover:bg-green-700 transition-all flex items-center justify-center gap-2 disabled:opacity-50 mt-4"
           >
             {isLoading ? <Loader2 className="animate-spin w-5 h-5" /> : 'Sign Up'}
           </button>
@@ -159,7 +159,7 @@ export function SignUp() {
               onClick={() => handleSocialSignUp('facebook')}
               disabled={isLoading}
               aria-label="Sign up with Facebook"
-              className="w-full border border-gray-300 bg-white text-gray-800 py-2.5 rounded-lg hover:bg-gray-50 transition-colors flex items-center justify-center gap-2"
+              className="w-full border border-gray-300 bg-white text-gray-800 py-2.5 rounded-lg shadow-sm hover:shadow-md hover:bg-gray-50 transition-all flex items-center justify-center gap-2"
             >
               <img src="/facebook.png" alt="Facebook" className="w-5 h-5" />
               Facebook
@@ -169,7 +169,7 @@ export function SignUp() {
               onClick={() => handleSocialSignUp('google')}
               disabled={isLoading}
               aria-label="Sign up with Google"
-              className="w-full border border-gray-300 bg-white text-gray-800 py-2.5 rounded-lg hover:bg-gray-50 transition-colors flex items-center justify-center gap-2"
+              className="w-full border border-gray-300 bg-white text-gray-800 py-2.5 rounded-lg shadow-sm hover:shadow-md hover:bg-gray-50 transition-all flex items-center justify-center gap-2"
             >
               <img src="/Google.png" alt="Google" className="w-5 h-5" />
               Google
