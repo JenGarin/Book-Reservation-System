@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { useApp } from '@/context/AppContext';
+import { backendApi } from '@/context/backendApi';
 import { Calendar, Clock, Users, Plus, MapPin, X } from 'lucide-react';
 import { format, startOfToday } from 'date-fns';
 import { toast } from 'sonner';
@@ -49,7 +50,7 @@ function getSportKey(courtName: string): string {
 }
 
 export function CoachSessions() {
-  const { currentUser, bookings, courts, users, createBooking, cancelBooking, config } = useApp();
+  const { currentUser, bookings, courts, users, createCoachSession, deleteCoachSession, getCoachEligibleStudents, config } = useApp();
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [selectedDate, setSelectedDate] = useState(format(startOfToday(), 'yyyy-MM-dd'));
@@ -58,6 +59,7 @@ export function CoachSessions() {
   const [duration, setDuration] = useState(60);
   const [maxStudents, setMaxStudents] = useState(4);
   const [notes, setNotes] = useState('');
+  const [backendEligibleStudents, setBackendEligibleStudents] = useState<typeof users>([]);
 
   useEffect(() => {
     if (!selectedCourt && courts.length > 0) {
@@ -117,6 +119,28 @@ export function CoachSessions() {
     return users.filter((u) => studentIds.has(u.id));
   }, [bookings, courts, currentUser, users, selectedCourtData, selectedSportKey, selectedDate, selectedTime, duration]);
 
+  useEffect(() => {
+    let active = true;
+    if (!backendApi.isEnabled || !selectedCourt) {
+      setBackendEligibleStudents([]);
+      return;
+    }
+    getCoachEligibleStudents({ courtId: selectedCourt })
+      .then((list) => {
+        if (!active) return;
+        setBackendEligibleStudents(list.filter((user) => user.role === 'player'));
+      })
+      .catch(() => {
+        if (!active) return;
+        setBackendEligibleStudents([]);
+      });
+    return () => {
+      active = false;
+    };
+  }, [getCoachEligibleStudents, selectedCourt]);
+
+  const resolvedAutoStudents = backendApi.isEnabled ? backendEligibleStudents : autoDetectedStudents;
+
   const handleCreateSession = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!currentUser) return;
@@ -131,26 +155,21 @@ export function CoachSessions() {
 
     const endTime = addMinutesToTime(selectedTime, duration);
     const parsedDate = new Date(`${selectedDate}T00:00:00`);
-    const autoStudentIds = autoDetectedStudents.map((u) => u.id);
+    const autoStudentIds = resolvedAutoStudents.map((u) => u.id);
     const resolvedMaxStudents = Math.max(maxStudents, autoStudentIds.length || 0);
 
     setIsSubmitting(true);
     try {
-      await createBooking({
+      await createCoachSession({
         courtId: selectedCourt,
-        userId: currentUser.id,
-        type: 'training',
         date: parsedDate,
         startTime: selectedTime,
         endTime,
         duration,
-        status: 'confirmed',
-        paymentStatus: 'paid',
-        amount: 0,
         maxPlayers: resolvedMaxStudents,
-        players: autoStudentIds,
         notes,
-        checkedIn: false,
+        amount: 0,
+        sport: selectedSportKey,
       });
 
       toast.success(
@@ -169,7 +188,7 @@ export function CoachSessions() {
 
   const handleCancelSession = async (id: string) => {
     if (!confirm('Cancel this training session?')) return;
-    await cancelBooking(id);
+    await deleteCoachSession(id);
     toast.success('Session cancelled.');
   };
 
@@ -332,11 +351,11 @@ export function CoachSessions() {
 
                 <div className="md:col-span-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/40 p-3">
                   <p className="text-sm font-medium text-slate-800 dark:text-slate-200">
-                    Auto-detected approved students ({selectedSportKey}): {autoDetectedStudents.length}
+                    Auto-detected approved students ({selectedSportKey}): {resolvedAutoStudents.length}
                   </p>
-                  {autoDetectedStudents.length > 0 ? (
+                  {resolvedAutoStudents.length > 0 ? (
                     <p className="text-xs text-slate-600 dark:text-slate-400 mt-1">
-                      {autoDetectedStudents.map((s) => s.name || s.email).join(', ')}
+                      {resolvedAutoStudents.map((s) => s.name || s.email).join(', ')}
                     </p>
                   ) : (
                     <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">

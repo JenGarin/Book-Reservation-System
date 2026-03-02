@@ -1,10 +1,11 @@
 import { useState } from 'react';
 import { useApp } from '@/context/AppContext';
+import { PASSWORD_MIN_LENGTH } from '@/config/authPolicy';
 import { User, Lock, Save, Bell, Shield, BadgeCheck } from 'lucide-react';
 import { toast } from 'sonner';
 
 export function ProfileSettings() {
-  const { currentUser, updateUser } = useApp();
+  const { currentUser, updateUser, updateCoachProfile, submitCoachVerification, changePassword } = useApp();
   const [isLoading, setIsLoading] = useState(false);
   
   // Password State
@@ -56,59 +57,77 @@ export function ProfileSettings() {
   const handleUpdateProfile = async (e: React.FormEvent) => {
     e.preventDefault();
     setIsLoading(true);
-    // Simulate API call
-    await new Promise(resolve => setTimeout(resolve, 1000));
-    const coachExpertise = coachExpertiseInput
-      .split(',')
-      .map((item) => item.trim())
-      .filter(Boolean);
-    const hasVerificationPayload =
-      verificationId.trim() !== '' ||
-      verificationNotes.trim() !== '' ||
-      verificationDocumentName.trim() !== '';
-    const verificationStatus = hasVerificationPayload
-      ? currentUser?.coachVerificationStatus === 'verified'
-        ? 'verified'
-        : 'pending'
-      : 'unverified';
+    try {
+      const coachExpertise = coachExpertiseInput
+        .split(',')
+        .map((item) => item.trim())
+        .filter(Boolean);
+      const hasVerificationPayload =
+        verificationId.trim() !== '' ||
+        verificationNotes.trim() !== '' ||
+        verificationDocumentName.trim() !== '';
 
-    updateUser({
-      name,
-      email,
-      phone,
-      skillLevel,
-      avatar,
-      ...(isCoach
-        ? {
-            coachProfile: coachProfile.trim(),
-            coachExpertise,
-            coachVerificationMethod: verificationMethod,
-            coachVerificationId: verificationId.trim(),
-            coachVerificationNotes: verificationNotes.trim(),
-            coachVerificationDocumentName: verificationDocumentName.trim(),
-            coachVerificationStatus: verificationStatus,
-            coachVerificationSubmittedAt: hasVerificationPayload ? new Date().toISOString() : '',
-          }
-        : {}),
-    });
-    toast.success('Profile updated successfully');
-    setIsLoading(false);
+      await updateUser({
+        name,
+        email,
+        phone,
+        skillLevel,
+        avatar,
+      });
+
+      if (isCoach) {
+        await updateCoachProfile({
+          avatar,
+          coachProfile: coachProfile.trim(),
+          coachExpertise,
+        });
+
+        if (hasVerificationPayload && verificationDocumentName.trim() !== '') {
+          await submitCoachVerification({
+            method: verificationMethod as 'certification' | 'license' | 'experience' | 'other',
+            documentName: verificationDocumentName.trim(),
+            verificationId: verificationId.trim() || undefined,
+            notes: verificationNotes.trim() || undefined,
+          });
+        }
+      }
+
+      toast.success('Profile updated successfully');
+    } catch (error: any) {
+      toast.error(error?.message || 'Failed to update profile');
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   const handleUpdatePassword = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!currentPassword) {
+        toast.error('Please enter your current password');
+        return;
+    }
+    if (newPassword.length < PASSWORD_MIN_LENGTH) {
+        toast.error(`New password must be at least ${PASSWORD_MIN_LENGTH} characters`);
+        return;
+    }
     if (newPassword !== confirmPassword) {
         toast.error('New passwords do not match');
         return;
     }
     setIsLoading(true);
-    // Simulate API call
-    await new Promise(resolve => setTimeout(resolve, 1000));
-    toast.success('Password changed successfully');
-    setCurrentPassword('');
-    setNewPassword('');
-    setConfirmPassword('');
-    setIsLoading(false);
+    try {
+      const result = await changePassword(currentPassword, newPassword);
+      if (!result.success) {
+        toast.error(result.message || 'Failed to change password');
+        return;
+      }
+      toast.success(result.message || 'Password changed successfully');
+      setCurrentPassword('');
+      setNewPassword('');
+      setConfirmPassword('');
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   return (
@@ -324,6 +343,7 @@ export function ProfileSettings() {
                                         type="password" 
                                         value={newPassword}
                                         onChange={(e) => setNewPassword(e.target.value)}
+                                        minLength={PASSWORD_MIN_LENGTH}
                                         className="w-full pl-10 pr-4 py-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white focus:ring-2 focus:ring-teal-500 outline-none transition-all"
                                         placeholder="Enter new password"
                                     />
@@ -337,6 +357,7 @@ export function ProfileSettings() {
                                         type="password" 
                                         value={confirmPassword}
                                         onChange={(e) => setConfirmPassword(e.target.value)}
+                                        minLength={PASSWORD_MIN_LENGTH}
                                         className="w-full pl-10 pr-4 py-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white focus:ring-2 focus:ring-teal-500 outline-none transition-all"
                                         placeholder="Confirm new password"
                                     />

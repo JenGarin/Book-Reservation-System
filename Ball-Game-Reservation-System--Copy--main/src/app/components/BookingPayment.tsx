@@ -4,6 +4,7 @@ import { ArrowLeft, X } from 'lucide-react';
 import { format } from 'date-fns';
 import { toast } from 'sonner';
 import { useApp } from '@/context/AppContext';
+import { backendApi } from '@/context/backendApi';
 
 type PaymentMethod = 'gcash' | 'maya';
 
@@ -15,6 +16,7 @@ interface BookingDraft {
   endTime: string;
   duration: number;
   amount: number;
+  bookingHoldId?: string;
   maxPlayers?: number;
   players?: string[];
 }
@@ -32,12 +34,29 @@ const WALLET_LINKS: Record<PaymentMethod, { appUrl: string; webUrl: string }> = 
 
 export function BookingPayment() {
   const { currentUser, createBooking, courts } = useApp();
+  const usingBackendApi = backendApi.isEnabled;
   const location = useLocation();
   const navigate = useNavigate();
   const draft = (location.state as { bookingDraft?: BookingDraft } | null)?.bookingDraft;
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('gcash');
   const [mobileNumber, setMobileNumber] = useState('');
   const [submitting, setSubmitting] = useState(false);
+
+  const releaseHoldIfNeeded = async () => {
+    if (!usingBackendApi) return;
+    const holdId = String(draft?.bookingHoldId || '').trim();
+    if (!holdId) return;
+    try {
+      await backendApi.releaseBookingHold(holdId);
+    } catch {
+      // Ignore if hold already expired/consumed/released.
+    }
+  };
+
+  const handleCancel = async () => {
+    await releaseHoldIfNeeded();
+    navigate('/booking');
+  };
 
   const courtName = useMemo(() => {
     if (!draft) return '';
@@ -68,21 +87,44 @@ export function BookingPayment() {
       return;
     }
 
-    const { appUrl, webUrl } = WALLET_LINKS[paymentMethod];
-    const appWindow = window.open(appUrl, '_blank', 'noopener,noreferrer');
-    if (!appWindow) {
-      window.open(webUrl, '_blank', 'noopener,noreferrer');
-    } else {
-      setTimeout(() => {
-        if (appWindow.closed) {
-          window.open(webUrl, '_blank', 'noopener,noreferrer');
+    if (!usingBackendApi) {
+      const { appUrl, webUrl } = WALLET_LINKS[paymentMethod];
+      const appWindow = window.open(appUrl, '_blank', 'noopener,noreferrer');
+      if (!appWindow) {
+        window.open(webUrl, '_blank', 'noopener,noreferrer');
+      } else {
+        setTimeout(() => {
+          if (appWindow.closed) {
+            window.open(webUrl, '_blank', 'noopener,noreferrer');
+          }
+        }, 1200);
+      }
+    }
+
+    if (usingBackendApi && draft.bookingHoldId) {
+      try {
+        const dateKey = format(new Date(draft.date), 'yyyy-MM-dd');
+        const holds = await backendApi.getMyBookingHolds({
+          courtId: draft.courtId,
+          date: dateKey,
+        });
+        const hasActiveHold = (Array.isArray(holds) ? holds : []).some(
+          (hold: any) => String(hold?.id || '') === String(draft.bookingHoldId)
+        );
+        if (!hasActiveHold) {
+          toast.error('Your hold expired. Please reselect your booking slot.');
+          navigate('/booking');
+          return;
         }
-      }, 1200);
+      } catch {
+        toast.error('Unable to validate your booking hold. Please try again.');
+        return;
+      }
     }
 
     setSubmitting(true);
     try {
-      await createBooking({
+      const bookingId = await createBooking({
         courtId: draft.courtId,
         userId: currentUser.id,
         type: draft.type,
@@ -91,14 +133,23 @@ export function BookingPayment() {
         endTime: draft.endTime,
         duration: draft.duration,
         status: 'pending',
-        paymentStatus: 'paid',
+        paymentStatus: usingBackendApi ? 'unpaid' : 'paid',
         amount: draft.amount,
         checkedIn: false,
         maxPlayers: draft.maxPlayers,
         players: draft.players,
       });
 
-      toast.success('Payment successful. Booking request sent to admin for approval.');
+      if (usingBackendApi) {
+        const tx = await backendApi.createPaymentCheckout(bookingId, paymentMethod);
+        const checkoutUrl = String(tx?.checkoutUrl || '').trim();
+        if (checkoutUrl) {
+          window.open(checkoutUrl, '_blank', 'noopener,noreferrer');
+        }
+        toast.success('Payment checkout created. Complete payment in your wallet to finalize booking.');
+      } else {
+        toast.success('Payment successful. Booking request sent to admin for approval.');
+      }
       navigate('/my-bookings');
     } catch (error) {
       toast.error('Payment failed. Please try again.');
@@ -113,7 +164,7 @@ export function BookingPayment() {
         <div className="flex items-center justify-between">
           <button
             type="button"
-            onClick={() => navigate('/booking')}
+            onClick={() => void handleCancel()}
             className="p-2 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-300"
             aria-label="Back"
           >
@@ -125,7 +176,7 @@ export function BookingPayment() {
           </div>
           <button
             type="button"
-            onClick={() => navigate('/booking')}
+            onClick={() => void handleCancel()}
             className="p-2 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-300"
             aria-label="Close"
           >
@@ -219,7 +270,7 @@ export function BookingPayment() {
         <div className="flex items-center gap-3">
           <button
             type="button"
-            onClick={() => navigate('/booking')}
+            onClick={() => void handleCancel()}
             className="flex-1 py-2.5 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-700"
           >
             Cancel
@@ -235,7 +286,9 @@ export function BookingPayment() {
         </div>
 
         <div className="pt-3 border-t border-slate-200 dark:border-slate-700 text-center text-xs md:text-sm text-slate-500 dark:text-slate-400">
-          Demo Mode: Payment will be simulated. No actual charges will be made.
+          {usingBackendApi
+            ? 'Backend Mode: Complete payment using the generated wallet checkout.'
+            : 'Demo Mode: Payment will be simulated. No actual charges will be made.'}
         </div>
       </div>
     </div>

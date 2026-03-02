@@ -13,6 +13,7 @@ import {
 import { addDays, format, isSameDay, parseISO } from 'date-fns';
 import { supabase } from './supabase';
 import { backendApi } from './backendApi';
+import { PASSWORD_MIN_LENGTH } from '@/config/authPolicy';
 
 export interface UserSubscription {
   id: string;
@@ -42,6 +43,7 @@ interface AppContextType {
   userSubscription: UserSubscription | null;
   subscriptionHistory: UserSubscription[];
   notifications: Notification[];
+  unreadNotificationCount: number;
   login: (email: string, password: string, expectedRole?: User['role']) => Promise<{ success: boolean; message?: string }>;
   signup: (email: string, password: string, role?: string, payload?: SignupPayload) => Promise<{ success: boolean; message?: string }>;
   signInWithProvider: (provider: 'google' | 'facebook', role?: string) => Promise<{ success: boolean; message?: string }>;
@@ -50,25 +52,52 @@ interface AppContextType {
   updateCourt: (id: string, court: Partial<Court>) => Promise<void>;
   deleteCourt: (id: string) => Promise<void>;
   createBooking: (booking: Omit<Booking, 'id' | 'createdAt'>) => Promise<string>;
-  cancelBooking: (id: string) => Promise<void>;
+  cancelBooking: (id: string, reason?: string) => Promise<void>;
   confirmBooking: (id: string) => Promise<void>;
   updateBooking: (id: string, updates: Partial<Booking>) => Promise<void>;
   checkInBooking: (id: string) => Promise<void>;
   getAvailableSlots: (courtId: string, date: Date, bookingType?: BookingType) => Promise<string[]>;
   markStudentAttendance: (bookingId: string, studentId: string, attended: boolean) => Promise<void>;
+  getCoachEligibleStudents: (filters?: { sport?: string; courtId?: string }) => Promise<User[]>;
+  createCoachSession: (payload: {
+    courtId: string;
+    date: Date;
+    startTime: string;
+    endTime: string;
+    duration: number;
+    maxPlayers: number;
+    notes?: string;
+    amount?: number;
+    sport?: string;
+  }) => Promise<string>;
+  deleteCoachSession: (id: string) => Promise<void>;
   getBookingAnalytics: (startDate: Date, endDate: Date) => Promise<BookingAnalytics>;
   getCourtUtilization: (courtId: string, startDate: Date, endDate: Date) => Promise<CourtUtilization[]>;
-  updateConfig: (config: Partial<FacilityConfig>) => void;
-  updateUser: (updates: Partial<User>) => void;
+  updateConfig: (config: Partial<FacilityConfig>) => Promise<void>;
+  updateUser: (updates: Partial<User>) => Promise<void>;
+  updateCoachProfile: (updates: { avatar?: string; coachProfile?: string; coachExpertise?: string[] }) => Promise<void>;
+  submitCoachVerification: (payload: {
+    method: 'certification' | 'license' | 'experience' | 'other';
+    documentName: string;
+    verificationId?: string;
+    notes?: string;
+  }) => Promise<void>;
+  getCoachVerificationQueue: (filters?: { status?: 'unverified' | 'pending' | 'verified' | 'rejected' }) => Promise<User[]>;
+  approveCoachVerification: (coachId: string, notes?: string) => Promise<void>;
+  rejectCoachVerification: (coachId: string, reason?: string) => Promise<void>;
   adminUpdateUser: (id: string, updates: Partial<User>) => Promise<void>;
   adminDeleteUser: (id: string) => Promise<void>;
   addMembership: (membership: Omit<MembershipPlan, 'id'>) => Promise<void>;
   updateMembership: (id: string, updates: Partial<MembershipPlan>) => Promise<void>;
   deleteMembership: (id: string) => Promise<void>;
   subscribe: (planId: string) => Promise<void>;
-  markAllNotificationsAsRead: () => void;
+  cancelSubscription: (subscriptionId: string) => Promise<void>;
+  markAllNotificationsAsRead: () => Promise<void>;
+  markNotificationAsRead: (notificationId: string) => Promise<void>;
   resetPassword: (email: string) => Promise<{ success: boolean; message?: string }>;
+  changePassword: (currentPassword: string, newPassword: string) => Promise<{ success: boolean; message?: string }>;
   joinSession: (bookingId: string) => Promise<void>;
+  leaveSession: (bookingId: string) => Promise<void>;
 }
 
 const AppContext = createContext<AppContextType | undefined>(undefined);
@@ -79,6 +108,7 @@ const STORAGE_KEYS = {
   COURTS: 'ventra_courts',
   BOOKINGS: 'ventra_bookings',
   MEMBERSHIPS: 'ventra_memberships',
+  CONFIG: 'ventra_config',
   SUBSCRIPTIONS: 'ventra_subscriptions',
   NOTIFICATIONS: 'ventra_notifications',
   AUTH: 'ventra_auth', // Stores email:password mapping
@@ -109,8 +139,8 @@ const SEED_USERS: User[] = [
 
 const SEED_COURTS: Court[] = [
   { id: 'c1', name: 'Downtown Basketball Court A', courtNumber: '1', type: 'indoor', surfaceType: 'hardcourt', hourlyRate: 500, peakHourRate: 700, status: 'active', operatingHours: { start: '06:00', end: '22:00' } },
-  { id: 'c2', name: 'Riverside Tennis Court 1', courtNumber: '2', type: 'indoor', surfaceType: 'wood', hourlyRate: 500, peakHourRate: 700, status: 'active', operatingHours: { start: '06:00', end: '22:00' } },
-  { id: 'c3', name: 'Pickle Ball Court 1', courtNumber: '3', type: 'outdoor', surfaceType: 'concrete', hourlyRate: 300, peakHourRate: 450, status: 'active', operatingHours: { start: '06:00', end: '18:00' } },
+  { id: 'c2', name: 'Riverside Tennis Court 1', courtNumber: '2', type: 'indoor', surfaceType: 'synthetic', hourlyRate: 500, peakHourRate: 700, status: 'active', operatingHours: { start: '06:00', end: '22:00' } },
+  { id: 'c3', name: 'Pickle Ball Court 1', courtNumber: '3', type: 'outdoor', surfaceType: 'hardcourt', hourlyRate: 300, peakHourRate: 450, status: 'active', operatingHours: { start: '06:00', end: '18:00' } },
 ];
 
 const SEED_MEMBERSHIPS: MembershipPlan[] = [
@@ -153,6 +183,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [userSubscription, setUserSubscription] = useState<UserSubscription | null>(null);
   const [subscriptionHistory, setSubscriptionHistory] = useState<UserSubscription[]>([]);
   const [notifications, setNotifications] = useState<Notification[]>([]);
+  const [backendUnreadNotificationCount, setBackendUnreadNotificationCount] = useState<number | null>(null);
+  const localUnreadNotificationCount = notifications.filter((n) => n.userId === currentUser?.id && !n.read).length;
+  const unreadNotificationCount = usingBackendApi
+    ? (backendUnreadNotificationCount ?? localUnreadNotificationCount)
+    : localUnreadNotificationCount;
 
   const mapBackendSubscription = (subscription: any): UserSubscription => {
     const membershipId = String(subscription?.planId || subscription?.membership_id || '');
@@ -191,13 +226,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
     async (user: User) => {
       if (!usingBackendApi) return;
       try {
-        const [nextUsers, nextCourts, nextBookings, nextPlans, nextNotifications, nextConfig] = await Promise.all([
+        const [nextUsers, nextCourts, nextBookings, nextPlans, nextNotifications, nextConfig, unreadCount] = await Promise.all([
           backendApi.getUsers(user.role),
           backendApi.getCourts(),
           backendApi.getBookings(),
           backendApi.getPlans(),
           backendApi.getNotifications(),
           backendApi.getConfig(),
+          backendApi.getUnreadNotificationsCount().catch(() => null),
         ]);
         setUsers(nextUsers);
         setCourts(nextCourts);
@@ -205,6 +241,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
         setMemberships(nextPlans);
         setNotifications(nextNotifications);
         setConfig(nextConfig);
+        if (typeof unreadCount === 'number') {
+          setBackendUnreadNotificationCount(unreadCount);
+        } else {
+          setBackendUnreadNotificationCount(nextNotifications.filter((n) => n.userId === user.id && !n.read).length);
+        }
       } catch (error) {
         console.error('Failed to hydrate backend data:', error);
       }
@@ -316,6 +357,15 @@ export function AppProvider({ children }: { children: ReactNode }) {
         localStorage.setItem(STORAGE_KEYS.MEMBERSHIPS, JSON.stringify(SEED_MEMBERSHIPS));
       }
 
+      // Facility Config
+      const storedConfig = localStorage.getItem(STORAGE_KEYS.CONFIG);
+      if (storedConfig) {
+        setConfig({ ...defaultConfig, ...JSON.parse(storedConfig) });
+      } else {
+        setConfig(defaultConfig);
+        localStorage.setItem(STORAGE_KEYS.CONFIG, JSON.stringify(defaultConfig));
+      }
+
       // Subscriptions & Notifications loaded on demand or below if needed
     };
 
@@ -331,13 +381,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
     if (!usingBackendApi) return;
     const params = new URLSearchParams(window.location.search);
     if (params.get('oauth') !== '1') return;
-    const email = String(params.get('email') || '').trim().toLowerCase();
-    const roleRaw = String(params.get('role') || 'player').trim().toLowerCase();
-    const role = ['admin', 'staff', 'coach', 'player'].includes(roleRaw) ? (roleRaw as User['role']) : 'player';
-    if (!email) return;
+    const state = String(params.get('state') || '').trim();
+    if (!state) return;
 
     backendApi
-      .login(email, '', role)
+      .oauthCallback(state)
       .then(async (user) => {
         setCurrentUser(user);
         localStorage.setItem('currentUser', JSON.stringify(user));
@@ -534,6 +582,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
     try {
       await new Promise(resolve => setTimeout(resolve, 800));
+
+      if (!password || password.trim().length < PASSWORD_MIN_LENGTH) {
+        return { success: false, message: `Password must be at least ${PASSWORD_MIN_LENGTH} characters.` };
+      }
       
       if (users.some(u => u.email === email)) {
         return { success: false, message: 'Email already exists' };
@@ -610,6 +662,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     if (usingBackendApi) {
       backendApi.logout().catch((error) => console.error('Backend logout failed:', error));
     }
+    setBackendUnreadNotificationCount(null);
     setCurrentUser(null);
     localStorage.removeItem('currentUser');
     supabase.auth.signOut();
@@ -713,9 +766,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
     return bookingData.id;
   };
 
-  const cancelBooking = async (id: string) => {
+  const cancelBooking = async (id: string, reason?: string) => {
     if (usingBackendApi) {
-      const updated = await backendApi.cancelBooking(id);
+      const updated = await backendApi.transitionBookingStatus(id, {
+        status: 'cancelled',
+        ...(reason?.trim() ? { reason: reason.trim() } : {}),
+      });
       setBookings((prev) => prev.map((b) => (b.id === id ? updated : b)));
       if (currentUser) await hydrateBackendData(currentUser);
       return;
@@ -761,8 +817,17 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   const confirmBooking = async (id: string) => {
     if (usingBackendApi) {
-      const updated = await backendApi.confirmBooking(id);
-      setBookings((prev) => prev.map((b) => (b.id === id ? updated : b)));
+      const transitioned = await backendApi.transitionBookingStatus(id, { status: 'confirmed' });
+      let finalized = transitioned;
+      const paymentStatus = String(transitioned?.paymentStatus || '').toLowerCase();
+      if (paymentStatus && paymentStatus !== 'paid') {
+        try {
+          finalized = await backendApi.setBookingPaymentDeadline(id, { ttlMinutes: 30 });
+        } catch (deadlineError) {
+          console.warn('Failed to set payment deadline after booking approval:', deadlineError);
+        }
+      }
+      setBookings((prev) => prev.map((b) => (b.id === id ? finalized : b)));
       if (currentUser) await hydrateBackendData(currentUser);
       return;
     }
@@ -828,6 +893,69 @@ export function AppProvider({ children }: { children: ReactNode }) {
     const updatedBookings = bookings.map(b => b.id === bookingId ? { ...b, playerAttendance: newAttendance } : b);
     setBookings(updatedBookings);
     persist(STORAGE_KEYS.BOOKINGS, updatedBookings);
+  };
+
+  const getCoachEligibleStudents = async (filters: { sport?: string; courtId?: string } = {}): Promise<User[]> => {
+    if (usingBackendApi) {
+      const rows = await backendApi.getCoachEligibleStudents(filters);
+      return rows.map((item) => item.player);
+    }
+    return [];
+  };
+
+  const createCoachSession = async (payload: {
+    courtId: string;
+    date: Date;
+    startTime: string;
+    endTime: string;
+    duration: number;
+    maxPlayers: number;
+    notes?: string;
+    amount?: number;
+    sport?: string;
+  }): Promise<string> => {
+    if (!currentUser) throw new Error('Must be logged in to create a coach session.');
+    if (usingBackendApi) {
+      const created = await backendApi.createCoachSession({
+        ...payload,
+        amount: payload.amount ?? 0,
+      });
+      setBookings((prev) => {
+        const withoutExisting = prev.filter((b) => b.id !== created.id);
+        return [created, ...withoutExisting];
+      });
+      if (currentUser) await hydrateBackendData(currentUser);
+      return created.id;
+    }
+
+    return await createBooking({
+      courtId: payload.courtId,
+      userId: currentUser.id,
+      type: 'training',
+      date: payload.date,
+      startTime: payload.startTime,
+      endTime: payload.endTime,
+      duration: payload.duration,
+      status: 'confirmed',
+      paymentStatus: 'paid',
+      amount: payload.amount ?? 0,
+      players: [],
+      maxPlayers: payload.maxPlayers,
+      coachId: currentUser.id,
+      notes: payload.notes,
+      checkedIn: false,
+    });
+  };
+
+  const deleteCoachSession = async (id: string) => {
+    if (usingBackendApi) {
+      await backendApi.deleteCoachSession(id);
+      setBookings((prev) => prev.filter((b) => b.id !== id));
+      if (currentUser) await hydrateBackendData(currentUser);
+      return;
+    }
+
+    await cancelBooking(id);
   };
 
   const getAvailableSlots = async (courtId: string, date: Date, bookingType: BookingType = 'private'): Promise<string[]> => {
@@ -956,30 +1084,26 @@ export function AppProvider({ children }: { children: ReactNode }) {
     return results;
   };
 
-  const updateConfig = (updates: Partial<FacilityConfig>) => {
+  const updateConfig = async (updates: Partial<FacilityConfig>) => {
     const nextConfig = { ...config, ...updates };
     setConfig(nextConfig);
     if (usingBackendApi) {
-      backendApi
-        .updateConfig(updates)
-        .then((saved) => setConfig(saved))
-        .catch((error) => console.error('updateConfig failed:', error));
+      const saved = await backendApi.updateConfig(updates);
+      setConfig(saved);
+      return;
     }
+    persist(STORAGE_KEYS.CONFIG, nextConfig);
   };
 
-  const updateUser = (updates: Partial<User>) => {
+  const updateUser = async (updates: Partial<User>) => {
     if (!currentUser) return;
 
     if (usingBackendApi) {
-      backendApi
-        .updateMe(updates)
-        .then((updatedUser) => {
-          const updatedUsers = users.map((u) => (u.id === updatedUser.id ? updatedUser : u));
-          setCurrentUser(updatedUser);
-          setUsers(updatedUsers);
-          localStorage.setItem('currentUser', JSON.stringify(updatedUser));
-        })
-        .catch((error) => console.error('updateUser failed:', error));
+      const updatedUser = await backendApi.updateMe(updates);
+      const updatedUsers = users.map((u) => (u.id === updatedUser.id ? updatedUser : u));
+      setCurrentUser(updatedUser);
+      setUsers(updatedUsers);
+      localStorage.setItem('currentUser', JSON.stringify(updatedUser));
       return;
     }
     
@@ -1005,6 +1129,115 @@ export function AppProvider({ children }: { children: ReactNode }) {
     }
 
     const updatedUsers = users.map(u => u.id === id ? { ...u, ...updates } : u);
+    setUsers(updatedUsers);
+    persist(STORAGE_KEYS.USERS, updatedUsers);
+  };
+
+  const updateCoachProfile = async (updates: { avatar?: string; coachProfile?: string; coachExpertise?: string[] }) => {
+    if (!currentUser || currentUser.role !== 'coach') return;
+
+    if (usingBackendApi) {
+      const updatedCoach = await backendApi.updateCoachProfile(updates);
+      setUsers((prev) => prev.map((u) => (u.id === updatedCoach.id ? updatedCoach : u)));
+      setCurrentUser(updatedCoach);
+      localStorage.setItem('currentUser', JSON.stringify(updatedCoach));
+      return;
+    }
+
+    await updateUser({
+      avatar: updates.avatar,
+      coachProfile: updates.coachProfile,
+      coachExpertise: updates.coachExpertise,
+    });
+  };
+
+  const submitCoachVerification = async (payload: {
+    method: 'certification' | 'license' | 'experience' | 'other';
+    documentName: string;
+    verificationId?: string;
+    notes?: string;
+  }) => {
+    if (!currentUser || currentUser.role !== 'coach') return;
+
+    if (usingBackendApi) {
+      const updatedCoach = await backendApi.submitCoachVerification(payload);
+      setUsers((prev) => prev.map((u) => (u.id === updatedCoach.id ? updatedCoach : u)));
+      setCurrentUser(updatedCoach);
+      localStorage.setItem('currentUser', JSON.stringify(updatedCoach));
+      return;
+    }
+
+    await updateUser({
+      coachVerificationMethod: payload.method,
+      coachVerificationDocumentName: payload.documentName,
+      coachVerificationId: payload.verificationId || '',
+      coachVerificationNotes: payload.notes || '',
+      coachVerificationStatus: 'pending',
+      coachVerificationSubmittedAt: new Date().toISOString(),
+    });
+  };
+
+  const getCoachVerificationQueue = async (
+    filters: { status?: 'unverified' | 'pending' | 'verified' | 'rejected' } = {}
+  ) => {
+    if (usingBackendApi) {
+      return await backendApi.getCoachVerificationQueue(filters);
+    }
+    const status = filters.status;
+    return users
+      .filter((u) => u.role === 'coach')
+      .filter((u) => !status || (u.coachVerificationStatus || 'unverified') === status)
+      .sort(
+        (a, b) =>
+          new Date(b.coachVerificationSubmittedAt || b.createdAt).getTime() -
+          new Date(a.coachVerificationSubmittedAt || a.createdAt).getTime()
+      );
+  };
+
+  const approveCoachVerification = async (coachId: string, notes?: string) => {
+    if (usingBackendApi) {
+      const updatedCoach = await backendApi.approveCoachVerification(coachId, notes);
+      setUsers((prev) => prev.map((u) => (u.id === coachId ? updatedCoach : u)));
+      if (currentUser?.id === coachId) {
+        setCurrentUser(updatedCoach);
+        localStorage.setItem('currentUser', JSON.stringify(updatedCoach));
+      }
+      return;
+    }
+
+    const updatedUsers = users.map((u) =>
+      u.id === coachId
+        ? {
+            ...u,
+            coachVerificationStatus: 'verified' as const,
+            coachVerificationNotes: notes?.trim() || u.coachVerificationNotes,
+          }
+        : u
+    );
+    setUsers(updatedUsers);
+    persist(STORAGE_KEYS.USERS, updatedUsers);
+  };
+
+  const rejectCoachVerification = async (coachId: string, reason?: string) => {
+    if (usingBackendApi) {
+      const updatedCoach = await backendApi.rejectCoachVerification(coachId, reason);
+      setUsers((prev) => prev.map((u) => (u.id === coachId ? updatedCoach : u)));
+      if (currentUser?.id === coachId) {
+        setCurrentUser(updatedCoach);
+        localStorage.setItem('currentUser', JSON.stringify(updatedCoach));
+      }
+      return;
+    }
+
+    const updatedUsers = users.map((u) =>
+      u.id === coachId
+        ? {
+            ...u,
+            coachVerificationStatus: 'rejected' as const,
+            coachVerificationNotes: reason?.trim() || u.coachVerificationNotes,
+          }
+        : u
+    );
     setUsers(updatedUsers);
     persist(STORAGE_KEYS.USERS, updatedUsers);
   };
@@ -1108,14 +1341,57 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setSubscriptionHistory(prev => [newSub, ...prev]);
   };
 
-  const markAllNotificationsAsRead = () => {
+  const cancelSubscription = async (subscriptionId: string) => {
+    if (!currentUser) throw new Error('You must be logged in to cancel a subscription.');
+    if (!subscriptionId) throw new Error('Subscription id is required.');
+
     if (usingBackendApi) {
-      backendApi
-        .markAllNotificationsAsRead()
-        .then(() => {
-          if (currentUser) hydrateBackendData(currentUser);
-        })
-        .catch((error) => console.error('markAllNotificationsAsRead failed:', error));
+      const updated = await backendApi.cancelSubscription(subscriptionId);
+      const updatedId = String(updated?.id || subscriptionId);
+      const updatedStatus = String(updated?.status || 'cancelled');
+      const cancelledAt = String(updated?.cancelledAt || new Date().toISOString());
+
+      setSubscriptionHistory((prev) =>
+        prev.map((item) =>
+          item.id === updatedId
+            ? { ...item, status: updatedStatus, end_date: cancelledAt }
+            : item
+        )
+      );
+      setUserSubscription((prev) =>
+        prev && prev.id === updatedId
+          ? { ...prev, status: updatedStatus, end_date: cancelledAt }
+          : prev
+      );
+      if (updatedStatus !== 'active') {
+        setUserSubscription(null);
+      }
+      return;
+    }
+
+    const allSubs: UserSubscription[] = JSON.parse(localStorage.getItem(STORAGE_KEYS.SUBSCRIPTIONS) || '[]');
+    const cancelledAt = new Date().toISOString();
+    const nextSubs = allSubs.map((item) =>
+      item.id === subscriptionId ? { ...item, status: 'cancelled', end_date: cancelledAt } : item
+    );
+    persist(STORAGE_KEYS.SUBSCRIPTIONS, nextSubs);
+    setSubscriptionHistory((prev) =>
+      prev.map((item) =>
+        item.id === subscriptionId ? { ...item, status: 'cancelled', end_date: cancelledAt } : item
+      )
+    );
+    if (userSubscription?.id === subscriptionId) {
+      setUserSubscription(null);
+    }
+  };
+
+  const markAllNotificationsAsRead = async () => {
+    if (usingBackendApi) {
+      await backendApi.markAllNotificationsAsRead();
+      setNotifications((prev) =>
+        prev.map((n) => (n.userId === currentUser?.id ? { ...n, read: true } : n))
+      );
+      setBackendUnreadNotificationCount(0);
       return;
     }
 
@@ -1124,6 +1400,28 @@ export function AppProvider({ children }: { children: ReactNode }) {
         prev.map((n) => (n.userId === currentUser.id ? { ...n, read: true } : n))
       );
     }
+  };
+
+  const markNotificationAsRead = async (notificationId: string) => {
+    if (!notificationId) return;
+
+    if (usingBackendApi) {
+      await backendApi.markNotificationAsRead(notificationId);
+      setNotifications((prev) =>
+        prev.map((n) => (n.id === notificationId ? { ...n, read: true } : n))
+      );
+      try {
+        const unread = await backendApi.getUnreadNotificationsCount();
+        setBackendUnreadNotificationCount(unread);
+      } catch {
+        setBackendUnreadNotificationCount((prev) => (prev == null ? prev : Math.max(0, prev - 1)));
+      }
+      return;
+    }
+
+    setNotifications((prev) =>
+      prev.map((n) => (n.id === notificationId ? { ...n, read: true } : n))
+    );
   };
 
   const resetPassword = async (email: string): Promise<{ success: boolean; message?: string }> => {
@@ -1142,6 +1440,46 @@ export function AppProvider({ children }: { children: ReactNode }) {
     // Mock reset
     await new Promise(resolve => setTimeout(resolve, 1000));
     return { success: true, message: 'Password reset instructions sent to your email (Mock).' };
+  };
+
+  const changePassword = async (
+    currentPassword: string,
+    newPassword: string
+  ): Promise<{ success: boolean; message?: string }> => {
+    if (usingBackendApi) {
+      try {
+        const result = await backendApi.changePassword(currentPassword, newPassword);
+        return {
+          success: Boolean(result?.changed),
+          message: 'Password changed successfully.',
+        };
+      } catch (error: any) {
+        return { success: false, message: error?.message || 'Failed to change password.' };
+      }
+    }
+
+    if (!currentUser) return { success: false, message: 'You must be logged in.' };
+    const auth = JSON.parse(localStorage.getItem(STORAGE_KEYS.AUTH) || '{}');
+    const normalizedEmail = currentUser.email.toLowerCase();
+    const storedPassword = Object.entries(auth).find(([email]) => email.toLowerCase() === normalizedEmail)?.[1] as string | undefined;
+    const fallbackPasswordByRole: Record<User['role'], string> = {
+      admin: 'admin',
+      staff: 'staff',
+      coach: 'coach',
+      player: 'player',
+    };
+    const expectedPassword = storedPassword || fallbackPasswordByRole[currentUser.role] || '';
+    if (currentPassword !== expectedPassword) {
+      return { success: false, message: 'Current password is incorrect.' };
+    }
+    if (!newPassword || newPassword.trim().length < PASSWORD_MIN_LENGTH) {
+      return { success: false, message: `New password must be at least ${PASSWORD_MIN_LENGTH} characters.` };
+    }
+
+    const existingKey = Object.keys(auth).find((email) => email.toLowerCase() === normalizedEmail) || currentUser.email;
+    auth[existingKey] = newPassword;
+    persist(STORAGE_KEYS.AUTH, auth);
+    return { success: true, message: 'Password changed successfully.' };
   };
 
   const joinSession = async (bookingId: string) => {
@@ -1180,6 +1518,27 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setNotifications(prev => [notification, ...prev]);
   };
 
+  const leaveSession = async (bookingId: string) => {
+    if (!currentUser) throw new Error('Must be logged in to leave a session');
+
+    if (usingBackendApi) {
+      const updated = await backendApi.leaveSession(bookingId);
+      setBookings((prev) => prev.map((b) => (b.id === bookingId ? updated : b)));
+      return;
+    }
+
+    const booking = bookings.find((b) => b.id === bookingId);
+    if (!booking) throw new Error('Session not found');
+    if (!(booking.players || []).includes(currentUser.id)) {
+      throw new Error('You are not enrolled in this session');
+    }
+
+    const updatedPlayers = (booking.players || []).filter((playerId) => playerId !== currentUser.id);
+    const updatedBookings = bookings.map((b) => (b.id === bookingId ? { ...b, players: updatedPlayers } : b));
+    setBookings(updatedBookings);
+    persist(STORAGE_KEYS.BOOKINGS, updatedBookings);
+  };
+
   return (
     <AppContext.Provider
       value={{
@@ -1192,6 +1551,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         userSubscription,
         subscriptionHistory,
         notifications,
+        unreadNotificationCount,
         login,
         signup,
         signInWithProvider,
@@ -1206,19 +1566,31 @@ export function AppProvider({ children }: { children: ReactNode }) {
         checkInBooking,
         getAvailableSlots,
         markStudentAttendance,
+        getCoachEligibleStudents,
+        createCoachSession,
+        deleteCoachSession,
         getBookingAnalytics,
         getCourtUtilization,
         updateConfig,
         updateUser,
+        updateCoachProfile,
+        submitCoachVerification,
+        getCoachVerificationQueue,
+        approveCoachVerification,
+        rejectCoachVerification,
         adminUpdateUser,
         adminDeleteUser,
         addMembership,
         updateMembership,
         deleteMembership,
         subscribe,
+        cancelSubscription,
         markAllNotificationsAsRead,
+        markNotificationAsRead,
         resetPassword,
+        changePassword,
         joinSession,
+        leaveSession,
       }}
     >
       {children}

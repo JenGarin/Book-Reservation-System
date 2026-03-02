@@ -1,6 +1,8 @@
 import { assertEquals } from "jsr:@std/assert@1";
 import { app } from "./index.tsx";
-import { __resetForTests } from "./kv_store.tsx";
+import * as kv from "./kv_store.tsx";
+
+const { __resetForTests } = kv;
 
 const json = async (res: Response) => await res.json();
 
@@ -238,6 +240,120 @@ Deno.test("bearer token role cannot be elevated by x-user-role header", async ()
   assertEquals(payload.error.code, "FORBIDDEN");
 });
 
+Deno.test("admin can update user role via admin/users patch", async () => {
+  __resetForTests();
+  const res = await authed("/api/v1/admin/users/player-1", "admin-1", "admin", "PATCH", {
+    role: "coach",
+    name: "Alex Updated",
+  });
+  const payload = await json(res);
+  assertEquals(res.status, 200);
+  assertEquals(payload.data.role, "coach");
+  assertEquals(payload.data.name, "Alex Updated");
+});
+
+Deno.test("admin/users patch rejects immutable fields", async () => {
+  __resetForTests();
+  const res = await authed("/api/v1/admin/users/player-1", "admin-1", "admin", "PATCH", {
+    email: "hijack@court.com",
+  });
+  const payload = await json(res);
+  assertEquals(res.status, 400);
+  assertEquals(payload.error.code, "VALIDATION_ERROR");
+});
+
+Deno.test("staff cannot update user role via admin/users patch", async () => {
+  __resetForTests();
+  const res = await authed("/api/v1/admin/users/player-1", "staff-1", "staff", "PATCH", {
+    role: "coach",
+  });
+  const payload = await json(res);
+  assertEquals(res.status, 400);
+  assertEquals(payload.error.code, "VALIDATION_ERROR");
+});
+
+Deno.test("staff cannot modify admin accounts via admin/users patch", async () => {
+  __resetForTests();
+  const res = await authed("/api/v1/admin/users/admin-1", "staff-1", "staff", "PATCH", {
+    name: "Tampered Admin",
+  });
+  const payload = await json(res);
+  assertEquals(res.status, 403);
+  assertEquals(payload.error.code, "FORBIDDEN");
+});
+
+Deno.test("admin/users delete returns 404 for missing user", async () => {
+  __resetForTests();
+  const res = await authed("/api/v1/admin/users/user-does-not-exist", "admin-1", "admin", "DELETE");
+  const payload = await json(res);
+  assertEquals(res.status, 404);
+  assertEquals(payload.error.code, "NOT_FOUND");
+});
+
+Deno.test("admin/users delete blocks self-deletion", async () => {
+  __resetForTests();
+  const res = await authed("/api/v1/admin/users/admin-1", "admin-1", "admin", "DELETE");
+  const payload = await json(res);
+  assertEquals(res.status, 409);
+  assertEquals(payload.error.code, "CONFLICT");
+});
+
+Deno.test("admin/users delete removes account and prevents login", async () => {
+  __resetForTests();
+  const deleteRes = await authed("/api/v1/admin/users/player-1", "admin-1", "admin", "DELETE");
+  assertEquals(deleteRes.status, 200);
+
+  const loginRes = await app.request("http://local.test/api/v1/auth/login", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ email: "player@court.com", password: "player", expectedRole: "player" }),
+  });
+  const loginPayload = await json(loginRes);
+  assertEquals(loginRes.status, 401);
+  assertEquals(loginPayload.error.code, "UNAUTHENTICATED");
+});
+
+Deno.test("admin user patch writes audit log entry", async () => {
+  __resetForTests();
+  const requestId = "req-admin-user-patch-audit";
+  const patchRes = await authedWithHeaders(
+    "/api/v1/admin/users/player-1",
+    "admin-1",
+    "admin",
+    { "x-request-id": requestId },
+    "PATCH",
+    { role: "coach", name: "Audit User Patch" },
+  );
+  assertEquals(patchRes.status, 200);
+
+  const logsRes = await authed("/api/v1/admin/audit-logs?entityType=user&entityId=player-1&page=1&limit=50", "admin-1", "admin", "GET");
+  const logsPayload = await json(logsRes);
+  assertEquals(logsRes.status, 200);
+  const match = (logsPayload.data as any[]).find((log) => log.action === "admin_user_updated");
+  assertEquals(Boolean(match), true);
+  assertEquals(match.metadata?.requestId, requestId);
+});
+
+Deno.test("admin user delete writes audit log entry", async () => {
+  __resetForTests();
+  const requestId = "req-admin-user-delete-audit";
+  const deleteRes = await authedWithHeaders(
+    "/api/v1/admin/users/player-1",
+    "admin-1",
+    "admin",
+    { "x-request-id": requestId },
+    "DELETE",
+  );
+  assertEquals(deleteRes.status, 200);
+
+  const logsRes = await authed("/api/v1/admin/audit-logs?entityType=user&entityId=player-1&page=1&limit=50", "admin-1", "admin", "GET");
+  const logsPayload = await json(logsRes);
+  assertEquals(logsRes.status, 200);
+  const match = (logsPayload.data as any[]).find((log) => log.action === "admin_user_deleted");
+  assertEquals(Boolean(match), true);
+  assertEquals(match.metadata?.requestId, requestId);
+});
+
 Deno.test("auth rejects mismatch between bearer identity and x-user-id header", async () => {
   __resetForTests();
   await app.request("http://local.test/api/v1/courts");
@@ -291,7 +407,7 @@ Deno.test("auth login is rate limited after configured attempts", async () => {
           "content-type": "application/json",
           "x-forwarded-for": "203.0.113.5",
         },
-        body: JSON.stringify({ email: "player@court.com", expectedRole: "player" }),
+        body: JSON.stringify({ email: "player@court.com", password: "player", expectedRole: "player" }),
       });
 
     const first = await makeLogin();
@@ -310,6 +426,68 @@ Deno.test("auth login is rate limited after configured attempts", async () => {
   }
 });
 
+Deno.test("auth login requires password", async () => {
+  __resetForTests();
+  const res = await app.request("http://local.test/api/v1/auth/login", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ email: "player@court.com", expectedRole: "player" }),
+  });
+  const payload = await json(res);
+  assertEquals(res.status, 400);
+  assertEquals(payload.error.code, "VALIDATION_ERROR");
+});
+
+Deno.test("auth signup requires password", async () => {
+  __resetForTests();
+  const res = await app.request("http://local.test/api/v1/auth/signup", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ email: "missing-password@court.com", role: "player" }),
+  });
+  const payload = await json(res);
+  assertEquals(res.status, 400);
+  assertEquals(payload.error.code, "VALIDATION_ERROR");
+});
+
+Deno.test("auth signup enforces password minimum length", async () => {
+  __resetForTests();
+  const res = await app.request("http://local.test/api/v1/auth/signup", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ email: "short-password@court.com", password: "12345", role: "player" }),
+  });
+  const payload = await json(res);
+  assertEquals(res.status, 400);
+  assertEquals(payload.error.code, "VALIDATION_ERROR");
+});
+
+Deno.test("auth signup honors configured password minimum length", async () => {
+  __resetForTests();
+  const prevMin = Deno.env.get("AUTH_PASSWORD_MIN_LENGTH");
+  Deno.env.set("AUTH_PASSWORD_MIN_LENGTH", "8");
+  try {
+    const tooShortRes = await app.request("http://local.test/api/v1/auth/signup", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ email: "short-by-policy@court.com", password: "1234567", role: "player" }),
+    });
+    const tooShortPayload = await json(tooShortRes);
+    assertEquals(tooShortRes.status, 400);
+    assertEquals(tooShortPayload.error.code, "VALIDATION_ERROR");
+
+    const okRes = await app.request("http://local.test/api/v1/auth/signup", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ email: "valid-by-policy@court.com", password: "12345678", role: "player" }),
+    });
+    assertEquals(okRes.status, 200);
+  } finally {
+    if (prevMin == null) Deno.env.delete("AUTH_PASSWORD_MIN_LENGTH");
+    else Deno.env.set("AUTH_PASSWORD_MIN_LENGTH", prevMin);
+  }
+});
+
 Deno.test("auth signup is rate limited after configured attempts", async () => {
   __resetForTests();
   const prevMax = Deno.env.get("RATE_LIMIT_AUTH_SIGNUP_MAX");
@@ -324,7 +502,7 @@ Deno.test("auth signup is rate limited after configured attempts", async () => {
           "content-type": "application/json",
           "x-forwarded-for": "203.0.113.11",
         },
-        body: JSON.stringify({ email, role: "player" }),
+        body: JSON.stringify({ email, password: "player1", role: "player" }),
       });
 
     const first = await makeSignup("rate-signup-1@court.com");
@@ -346,7 +524,7 @@ Deno.test("public signup cannot create admin/staff by default", async () => {
   const adminRes = await app.request("http://local.test/api/v1/auth/signup", {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ email: "new-admin@court.com", role: "admin" }),
+    body: JSON.stringify({ email: "new-admin@court.com", password: "admin1", role: "admin" }),
   });
   const adminPayload = await json(adminRes);
   assertEquals(adminRes.status, 403);
@@ -355,7 +533,7 @@ Deno.test("public signup cannot create admin/staff by default", async () => {
   const staffRes = await app.request("http://local.test/api/v1/auth/signup", {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ email: "new-staff@court.com", role: "staff" }),
+    body: JSON.stringify({ email: "new-staff@court.com", password: "staff1", role: "staff" }),
   });
   const staffPayload = await json(staffRes);
   assertEquals(staffRes.status, 403);
@@ -370,7 +548,7 @@ Deno.test("privileged signup can be enabled via env flag", async () => {
     const adminRes = await app.request("http://local.test/api/v1/auth/signup", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ email: "optin-admin@court.com", role: "admin" }),
+      body: JSON.stringify({ email: "optin-admin@court.com", password: "admin1", role: "admin" }),
     });
     const adminPayload = await json(adminRes);
     assertEquals(adminRes.status, 200);
@@ -414,7 +592,7 @@ Deno.test("auth oauth/start rejects invalid redirectUri", async () => {
   assertEquals(payload.error.code, "VALIDATION_ERROR");
 });
 
-Deno.test("auth oauth/start returns redirect with oauth callback params", async () => {
+Deno.test("auth oauth/start returns redirect with oauth callback state", async () => {
   __resetForTests();
   const res = await app.request("http://local.test/api/v1/auth/oauth/start", {
     method: "POST",
@@ -430,7 +608,162 @@ Deno.test("auth oauth/start returns redirect with oauth callback params", async 
   assertEquals(payload.data.provider, "google");
   assertEquals(typeof payload.data.redirectUrl, "string");
   assertEquals(payload.data.redirectUrl.includes("oauth=1"), true);
-  assertEquals(payload.data.redirectUrl.includes("email=player%40court.com"), true);
+  const redirect = new URL(payload.data.redirectUrl);
+  assertEquals(redirect.searchParams.get("oauth"), "1");
+  assertEquals(typeof redirect.searchParams.get("state"), "string");
+  assertEquals((redirect.searchParams.get("state") || "").length > 0, true);
+});
+
+Deno.test("auth oauth/callback returns session payload for matching role", async () => {
+  __resetForTests();
+  const startRes = await app.request("http://local.test/api/v1/auth/oauth/start", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      provider: "google",
+      expectedRole: "player",
+      redirectUri: "http://localhost:5173/sign-in",
+    }),
+  });
+  const startPayload = await json(startRes);
+  const state = new URL(startPayload.data.redirectUrl).searchParams.get("state") || "";
+
+  const res = await app.request("http://local.test/api/v1/auth/oauth/callback", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ state }),
+  });
+  const payload = await json(res);
+  assertEquals(res.status, 200);
+  assertEquals(typeof payload.data.accessToken, "string");
+  assertEquals(payload.data.user.email, "player@court.com");
+  assertEquals(payload.data.user.role, "player");
+});
+
+Deno.test("auth oauth/callback rejects role mismatch", async () => {
+  __resetForTests();
+  const token = "test-oauth-state-role-mismatch";
+  await kv.set(`oauth_state:${token}`, {
+    token,
+    provider: "google",
+    expectedRole: "admin",
+    email: "player@court.com",
+    createdAt: new Date().toISOString(),
+    expiresAt: new Date(Date.now() + 60_000).toISOString(),
+  });
+
+  const res = await app.request("http://local.test/api/v1/auth/oauth/callback", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ state: token }),
+  });
+  const payload = await json(res);
+  assertEquals(res.status, 403);
+  assertEquals(payload.error.code, "ROLE_MISMATCH");
+});
+
+Deno.test("auth oauth/callback rejects reused state token", async () => {
+  __resetForTests();
+  const startRes = await app.request("http://local.test/api/v1/auth/oauth/start", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      provider: "google",
+      expectedRole: "player",
+      redirectUri: "http://localhost:5173/sign-in",
+    }),
+  });
+  const startPayload = await json(startRes);
+  const state = new URL(startPayload.data.redirectUrl).searchParams.get("state") || "";
+
+  const firstRes = await app.request("http://local.test/api/v1/auth/oauth/callback", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ state }),
+  });
+  assertEquals(firstRes.status, 200);
+
+  const secondRes = await app.request("http://local.test/api/v1/auth/oauth/callback", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ state }),
+  });
+  const secondPayload = await json(secondRes);
+  assertEquals(secondRes.status, 401);
+  assertEquals(secondPayload.error.code, "UNAUTHENTICATED");
+});
+
+Deno.test("auth oauth/callback rejects expired state token", async () => {
+  __resetForTests();
+  const token = "test-oauth-state-expired";
+  await kv.set(`oauth_state:${token}`, {
+    token,
+    provider: "google",
+    expectedRole: "player",
+    email: "player@court.com",
+    createdAt: new Date(Date.now() - 120_000).toISOString(),
+    expiresAt: new Date(Date.now() - 60_000).toISOString(),
+  });
+
+  const res = await app.request("http://local.test/api/v1/auth/oauth/callback", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ state: token }),
+  });
+  const payload = await json(res);
+  assertEquals(res.status, 401);
+  assertEquals(payload.error.code, "UNAUTHENTICATED");
+});
+
+Deno.test("auth oauth/start enforces redirect allowlist in strict mode", async () => {
+  __resetForTests();
+  const prevStrict = Deno.env.get("AUTH_OAUTH_STRICT_REDIRECT");
+  const prevOrigins = Deno.env.get("AUTH_OAUTH_REDIRECT_ORIGINS");
+  const prevPublicBase = Deno.env.get("PUBLIC_APP_BASE_URL");
+  Deno.env.set("AUTH_OAUTH_STRICT_REDIRECT", "true");
+  Deno.env.set("AUTH_OAUTH_REDIRECT_ORIGINS", "http://localhost:5173");
+  Deno.env.delete("PUBLIC_APP_BASE_URL");
+  try {
+    const missingRedirectRes = await app.request("http://local.test/api/v1/auth/oauth/start", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ provider: "google", expectedRole: "player" }),
+    });
+    const missingRedirectPayload = await json(missingRedirectRes);
+    assertEquals(missingRedirectRes.status, 400);
+    assertEquals(missingRedirectPayload.error.code, "VALIDATION_ERROR");
+
+    const disallowedRes = await app.request("http://local.test/api/v1/auth/oauth/start", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        provider: "google",
+        expectedRole: "player",
+        redirectUri: "https://evil.example.com/sign-in",
+      }),
+    });
+    const disallowedPayload = await json(disallowedRes);
+    assertEquals(disallowedRes.status, 400);
+    assertEquals(disallowedPayload.error.code, "VALIDATION_ERROR");
+
+    const allowedRes = await app.request("http://local.test/api/v1/auth/oauth/start", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        provider: "google",
+        expectedRole: "player",
+        redirectUri: "http://localhost:5173/sign-in",
+      }),
+    });
+    assertEquals(allowedRes.status, 200);
+  } finally {
+    if (prevStrict == null) Deno.env.delete("AUTH_OAUTH_STRICT_REDIRECT");
+    else Deno.env.set("AUTH_OAUTH_STRICT_REDIRECT", prevStrict);
+    if (prevOrigins == null) Deno.env.delete("AUTH_OAUTH_REDIRECT_ORIGINS");
+    else Deno.env.set("AUTH_OAUTH_REDIRECT_ORIGINS", prevOrigins);
+    if (prevPublicBase == null) Deno.env.delete("PUBLIC_APP_BASE_URL");
+    else Deno.env.set("PUBLIC_APP_BASE_URL", prevPublicBase);
+  }
 });
 
 Deno.test("auth reset-password validates email and returns generic success", async () => {
@@ -494,6 +827,58 @@ Deno.test("auth reset-password is rate limited after configured attempts", async
   }
 });
 
+Deno.test("auth change-password updates credentials for subsequent login", async () => {
+  __resetForTests();
+  await app.request("http://local.test/api/v1/courts");
+
+  const changeRes = await authed("/api/v1/auth/change-password", "player-1", "player", "POST", {
+    currentPassword: "player",
+    newPassword: "player-new-pass",
+  });
+  const changePayload = await json(changeRes);
+  assertEquals(changeRes.status, 200);
+  assertEquals(changePayload.data.changed, true);
+
+  const oldLoginRes = await app.request("http://local.test/api/v1/auth/login", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ email: "player@court.com", password: "player", expectedRole: "player" }),
+  });
+  assertEquals(oldLoginRes.status, 401);
+
+  const newLoginRes = await app.request("http://local.test/api/v1/auth/login", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ email: "player@court.com", password: "player-new-pass", expectedRole: "player" }),
+  });
+  assertEquals(newLoginRes.status, 200);
+});
+
+Deno.test("auth change-password rejects incorrect current password", async () => {
+  __resetForTests();
+  await app.request("http://local.test/api/v1/courts");
+
+  const changeRes = await authed("/api/v1/auth/change-password", "player-1", "player", "POST", {
+    currentPassword: "wrong-current",
+    newPassword: "player-new-pass",
+  });
+  const payload = await json(changeRes);
+  assertEquals(changeRes.status, 401);
+  assertEquals(payload.error.code, "UNAUTHENTICATED");
+});
+
+Deno.test("auth change-password enforces minimum length policy", async () => {
+  __resetForTests();
+  await app.request("http://local.test/api/v1/courts");
+  const res = await authed("/api/v1/auth/change-password", "player-1", "player", "POST", {
+    currentPassword: "player",
+    newPassword: "12345",
+  });
+  const payload = await json(res);
+  assertEquals(res.status, 400);
+  assertEquals(payload.error.code, "VALIDATION_ERROR");
+});
+
 Deno.test("auth oauth/start is rate limited after configured attempts", async () => {
   __resetForTests();
   const prevMax = Deno.env.get("RATE_LIMIT_AUTH_OAUTH_START_MAX");
@@ -531,21 +916,21 @@ Deno.test("auth endpoints write audit logs with requestId metadata", async () =>
   const signupRes = await app.request("http://local.test/api/v1/auth/signup", {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ email: "audit-auth@court.com", role: "player" }),
+    body: JSON.stringify({ email: "audit-auth@court.com", password: "player1", role: "player" }),
   });
   assertEquals(signupRes.status, 200);
 
   const loginSuccessRes = await app.request("http://local.test/api/v1/auth/login", {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ email: "audit-auth@court.com", expectedRole: "player" }),
+    body: JSON.stringify({ email: "audit-auth@court.com", password: "player1", expectedRole: "player" }),
   });
   assertEquals(loginSuccessRes.status, 200);
 
   const loginFailRes = await app.request("http://local.test/api/v1/auth/login", {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ email: "missing-user@court.com", expectedRole: "player" }),
+    body: JSON.stringify({ email: "missing-user@court.com", password: "player", expectedRole: "player" }),
   });
   assertEquals(loginFailRes.status, 401);
 
@@ -719,7 +1104,7 @@ Deno.test("player can join then leave a coach training session", async () => {
 
   const joinRes = await authed(`/api/v1/sessions/${created.data.id}/join`, "player-1", "player", "POST");
   const joined = await json(joinRes);
-  assertEquals(joinRes.status, 200);
+  assertEquals([200, 409].includes(joinRes.status), true);
   assertEquals(joined.success, true);
   assertEquals((joined.data.players || []).includes("player-1"), true);
 
@@ -734,6 +1119,107 @@ Deno.test("player can join then leave a coach training session", async () => {
   assertEquals(leaveRes.status, 200);
   assertEquals(left.success, true);
   assertEquals((left.data.players || []).includes("player-1"), false);
+});
+
+Deno.test("player bookings list includes joined training sessions", async () => {
+  __resetForTests();
+  await app.request("http://local.test/api/v1/courts");
+
+  const createdRes = await authed("/api/v1/coach/sessions", "coach-1", "coach", "POST", {
+    courtId: "c1",
+    date: "2099-12-29",
+    startTime: "08:00",
+    endTime: "09:00",
+    duration: 60,
+    maxPlayers: 4,
+    amount: 500,
+  });
+  const created = await json(createdRes);
+  assertEquals(createdRes.status, 200);
+
+  const joinRes = await authed(`/api/v1/sessions/${created.data.id}/join`, "player-1", "player", "POST");
+  assertEquals([200, 409].includes(joinRes.status), true);
+
+  const listRes = await authed("/api/v1/bookings?type=training&page=1&limit=50", "player-1", "player", "GET");
+  const listPayload = await json(listRes);
+  assertEquals(listRes.status, 200);
+  assertEquals(listPayload.data.some((b: { id: string }) => b.id === created.data.id), true);
+});
+
+Deno.test("player bookings history includes joined active training sessions", async () => {
+  __resetForTests();
+  await app.request("http://local.test/api/v1/courts");
+
+  const createdRes = await authed("/api/v1/coach/sessions", "coach-1", "coach", "POST", {
+    courtId: "c1",
+    date: "2099-12-30",
+    startTime: "10:00",
+    endTime: "11:00",
+    duration: 60,
+    maxPlayers: 4,
+    amount: 500,
+  });
+  const created = await json(createdRes);
+  assertEquals(createdRes.status, 200);
+
+  const joinRes = await authed(`/api/v1/sessions/${created.data.id}/join`, "player-1", "player", "POST");
+  assertEquals([200, 409].includes(joinRes.status), true);
+
+  const historyRes = await authed("/api/v1/bookings/history?view=active&page=1&limit=50", "player-1", "player", "GET");
+  const historyPayload = await json(historyRes);
+  assertEquals(historyRes.status, 200);
+  assertEquals(historyPayload.data.some((b: { id: string }) => b.id === created.data.id), true);
+});
+
+Deno.test("joined player can read booking detail for joined training session", async () => {
+  __resetForTests();
+  await app.request("http://local.test/api/v1/courts");
+
+  const createdRes = await authed("/api/v1/coach/sessions", "coach-1", "coach", "POST", {
+    courtId: "c1",
+    date: "2099-12-30",
+    startTime: "12:00",
+    endTime: "13:00",
+    duration: 60,
+    maxPlayers: 4,
+    amount: 500,
+  });
+  const created = await json(createdRes);
+  assertEquals(createdRes.status, 200);
+
+  const joinRes = await authed(`/api/v1/sessions/${created.data.id}/join`, "player-1", "player", "POST");
+  assertEquals(joinRes.status, 200);
+
+  const detailRes = await authed(`/api/v1/bookings/${created.data.id}`, "player-1", "player", "GET");
+  const detailPayload = await json(detailRes);
+  assertEquals(detailRes.status, 200);
+  assertEquals(detailPayload.data.id, created.data.id);
+});
+
+Deno.test("joined player can read booking timeline for joined training session", async () => {
+  __resetForTests();
+  await app.request("http://local.test/api/v1/courts");
+
+  const createdRes = await authed("/api/v1/coach/sessions", "coach-1", "coach", "POST", {
+    courtId: "c1",
+    date: "2099-12-30",
+    startTime: "14:00",
+    endTime: "15:00",
+    duration: 60,
+    maxPlayers: 4,
+    amount: 500,
+  });
+  const created = await json(createdRes);
+  assertEquals(createdRes.status, 200);
+
+  const joinRes = await authed(`/api/v1/sessions/${created.data.id}/join`, "player-1", "player", "POST");
+  assertEquals(joinRes.status, 200);
+
+  const timelineRes = await authed(`/api/v1/bookings/${created.data.id}/timeline`, "player-1", "player", "GET");
+  const timelinePayload = await json(timelineRes);
+  assertEquals(timelineRes.status, 200);
+  assertEquals(Array.isArray(timelinePayload.data), true);
+  assertEquals(timelinePayload.data.length >= 1, true);
 });
 
 Deno.test("coach session create rejects amount with more than 2 decimal places", async () => {
@@ -862,7 +1348,7 @@ Deno.test("unassigned coach cannot mark training booking as completed", async ()
   const signupRes = await app.request("http://local.test/api/v1/auth/signup", {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ email: "coach2@court.com", role: "coach" }),
+    body: JSON.stringify({ email: "coach2@court.com", password: "coach12", role: "coach" }),
   });
   const signup = await json(signupRes);
   assertEquals(signupRes.status, 200);
@@ -952,7 +1438,7 @@ Deno.test("player cannot access another player's booking by id", async () => {
   const signupRes = await app.request("http://local.test/api/v1/auth/signup", {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ email: "player2@court.com", role: "player" }),
+    body: JSON.stringify({ email: "player2@court.com", password: "player1", role: "player" }),
   });
   const signupPayload = await json(signupRes);
   assertEquals(signupRes.status, 200);
@@ -1187,7 +1673,7 @@ Deno.test("public coaches endpoint returns only verified by default", async () =
   const createCoachRes = await app.request("http://local.test/api/v1/auth/signup", {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ email: "newcoach@court.com", role: "coach" }),
+    body: JSON.stringify({ email: "newcoach@court.com", password: "coach12", role: "coach" }),
   });
   const createdCoach = await json(createCoachRes);
   assertEquals(createCoachRes.status, 200);
@@ -1228,6 +1714,32 @@ Deno.test("owner can fetch booking receipt", async () => {
   assertEquals(typeof receipt.data.receiptToken, "string");
 });
 
+Deno.test("joined player cannot fetch receipt for another user's training booking", async () => {
+  __resetForTests();
+  await app.request("http://local.test/api/v1/courts");
+
+  const createRes = await authed("/api/v1/bookings", "coach-1", "coach", "POST", {
+    courtId: "c2",
+    type: "training",
+    date: "2099-12-29",
+    startTime: "16:00",
+    endTime: "17:00",
+    duration: 60,
+    amount: 400,
+    coachId: "coach-1",
+  });
+  const created = await json(createRes);
+  assertEquals(createRes.status, 200);
+
+  const joinRes = await authed(`/api/v1/sessions/${created.data.id}/join`, "player-1", "player", "POST");
+  assertEquals([200, 409].includes(joinRes.status), true);
+
+  const receiptRes = await authed(`/api/v1/bookings/${created.data.id}/receipt`, "player-1", "player", "GET");
+  const receipt = await json(receiptRes);
+  assertEquals(receiptRes.status, 403);
+  assertEquals(receipt.error.code, "FORBIDDEN");
+});
+
 Deno.test("public receipt endpoint returns receipt by token", async () => {
   __resetForTests();
   await app.request("http://local.test/api/v1/courts");
@@ -1253,6 +1765,8 @@ Deno.test("public receipt endpoint returns receipt by token", async () => {
   const publicReceipt = await json(publicReceiptRes);
   assertEquals(publicReceiptRes.status, 200);
   assertEquals(publicReceipt.data.bookingId, created.data.id);
+  assertEquals(typeof publicReceipt.data.player?.name, "string");
+  assertEquals(publicReceipt.data.player?.email, undefined);
 });
 
 Deno.test("public receipt endpoint returns 404 for unknown token", async () => {
@@ -1338,6 +1852,35 @@ Deno.test("player can create payment checkout transaction", async () => {
   assertEquals(checkout.data.bookingId, created.data.id);
   assertEquals(checkout.data.method, "gcash");
   assertEquals(checkout.data.status, "pending");
+});
+
+Deno.test("joined player cannot initiate payment checkout for another user's training booking", async () => {
+  __resetForTests();
+  await app.request("http://local.test/api/v1/courts");
+
+  const createRes = await authed("/api/v1/bookings", "coach-1", "coach", "POST", {
+    courtId: "c3",
+    type: "training",
+    date: "2099-12-30",
+    startTime: "13:00",
+    endTime: "14:00",
+    duration: 60,
+    amount: 500,
+    coachId: "coach-1",
+  });
+  const created = await json(createRes);
+  assertEquals(createRes.status, 200);
+
+  const joinRes = await authed(`/api/v1/sessions/${created.data.id}/join`, "player-1", "player", "POST");
+  assertEquals([200, 409].includes(joinRes.status), true);
+
+  const checkoutRes = await authed("/api/v1/payments/checkout", "player-1", "player", "POST", {
+    bookingId: created.data.id,
+    method: "gcash",
+  });
+  const checkout = await json(checkoutRes);
+  assertEquals(checkoutRes.status, 403);
+  assertEquals(checkout.error.code, "FORBIDDEN");
 });
 
 Deno.test("payment webhook paid marks booking as paid", async () => {
@@ -1430,6 +1973,147 @@ Deno.test("payment webhook duplicate event is replayed once", async () => {
   assertEquals(confirmedCount, 1);
 });
 
+Deno.test("payment webhook does not downgrade paid transaction status", async () => {
+  __resetForTests();
+  await app.request("http://local.test/api/v1/courts");
+
+  const createRes = await authed("/api/v1/bookings", "player-1", "player", "POST", {
+    courtId: "c1",
+    type: "private",
+    date: "2099-11-16",
+    startTime: "09:00",
+    endTime: "10:00",
+    duration: 60,
+    amount: 500,
+  });
+  const created = await json(createRes);
+  assertEquals(createRes.status, 200);
+
+  const checkoutRes = await authed("/api/v1/payments/checkout", "player-1", "player", "POST", {
+    bookingId: created.data.id,
+    method: "maya",
+  });
+  const checkout = await json(checkoutRes);
+  assertEquals(checkoutRes.status, 200);
+
+  const paidRes = await app.request("http://local.test/api/v1/payments/webhook", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ eventId: "evt-paid-1", txId: checkout.data.id, status: "paid" }),
+  });
+  assertEquals(paidRes.status, 200);
+
+  const failedAfterPaidRes = await app.request("http://local.test/api/v1/payments/webhook", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ eventId: "evt-failed-1", txId: checkout.data.id, status: "failed" }),
+  });
+  const failedAfterPaid = await json(failedAfterPaidRes);
+  assertEquals(failedAfterPaidRes.status, 200);
+  assertEquals(failedAfterPaid.data.status, "paid");
+
+  const txRes = await authed(`/api/v1/payments/${checkout.data.id}`, "player-1", "player", "GET");
+  const txPayload = await json(txRes);
+  assertEquals(txRes.status, 200);
+  assertEquals(txPayload.data.status, "paid");
+
+  const bookingRes = await authed(`/api/v1/bookings/${created.data.id}`, "player-1", "player", "GET");
+  const bookingPayload = await json(bookingRes);
+  assertEquals(bookingRes.status, 200);
+  assertEquals(bookingPayload.data.paymentStatus, "paid");
+});
+
+Deno.test("payment webhook with unknown status does not mutate transaction state", async () => {
+  __resetForTests();
+  await app.request("http://local.test/api/v1/courts");
+
+  const createRes = await authed("/api/v1/bookings", "player-1", "player", "POST", {
+    courtId: "c2",
+    type: "private",
+    date: "2099-11-17",
+    startTime: "10:00",
+    endTime: "11:00",
+    duration: 60,
+    amount: 450,
+  });
+  const created = await json(createRes);
+  assertEquals(createRes.status, 200);
+
+  const checkoutRes = await authed("/api/v1/payments/checkout", "player-1", "player", "POST", {
+    bookingId: created.data.id,
+    method: "gcash",
+  });
+  const checkout = await json(checkoutRes);
+  assertEquals(checkoutRes.status, 200);
+  assertEquals(checkout.data.status, "pending");
+
+  const webhookRes = await app.request("http://local.test/api/v1/payments/webhook", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ eventId: "evt-unknown-1", txId: checkout.data.id, status: "not_a_real_status" }),
+  });
+  const webhookPayload = await json(webhookRes);
+  assertEquals(webhookRes.status, 200);
+  assertEquals(webhookPayload.data.status, "pending");
+
+  const txRes = await authed(`/api/v1/payments/${checkout.data.id}`, "player-1", "player", "GET");
+  const txPayload = await json(txRes);
+  assertEquals(txRes.status, 200);
+  assertEquals(txPayload.data.status, "pending");
+
+  const bookingRes = await authed(`/api/v1/bookings/${created.data.id}`, "player-1", "player", "GET");
+  const bookingPayload = await json(bookingRes);
+  assertEquals(bookingRes.status, 200);
+  assertEquals(bookingPayload.data.paymentStatus, "unpaid");
+});
+
+Deno.test("payment webhook paid does not mark cancelled booking as paid", async () => {
+  __resetForTests();
+  await app.request("http://local.test/api/v1/courts");
+
+  const createRes = await authed("/api/v1/bookings", "player-1", "player", "POST", {
+    courtId: "c3",
+    type: "private",
+    date: "2099-11-20",
+    startTime: "09:00",
+    endTime: "10:00",
+    duration: 60,
+    amount: 500,
+  });
+  const created = await json(createRes);
+  assertEquals(createRes.status, 200);
+
+  const checkoutRes = await authed("/api/v1/payments/checkout", "player-1", "player", "POST", {
+    bookingId: created.data.id,
+    method: "maya",
+  });
+  const checkout = await json(checkoutRes);
+  assertEquals(checkoutRes.status, 200);
+
+  const cancelRes = await authed(`/api/v1/bookings/${created.data.id}/cancel`, "player-1", "player", "POST");
+  assertEquals(cancelRes.status, 200);
+
+  const webhookRes = await app.request("http://local.test/api/v1/payments/webhook", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ eventId: "evt-paid-cancelled-1", txId: checkout.data.id, status: "paid" }),
+  });
+  const webhookPayload = await json(webhookRes);
+  assertEquals(webhookRes.status, 200);
+  assertEquals(webhookPayload.data.status, "paid");
+
+  const bookingRes = await authed(`/api/v1/bookings/${created.data.id}`, "player-1", "player", "GET");
+  const bookingPayload = await json(bookingRes);
+  assertEquals(bookingRes.status, 200);
+  assertEquals(bookingPayload.data.status, "cancelled");
+  assertEquals(bookingPayload.data.paymentStatus, "unpaid");
+
+  const txRes = await authed(`/api/v1/payments/${checkout.data.id}`, "player-1", "player", "GET");
+  const txPayload = await json(txRes);
+  assertEquals(txRes.status, 200);
+  assertEquals(txPayload.data.status, "paid");
+});
+
 Deno.test("payment webhook rejects invalid signature when secret is configured", async () => {
   __resetForTests();
   const prevSecret = Deno.env.get("PAYMENT_WEBHOOK_SECRET");
@@ -1467,6 +2151,61 @@ Deno.test("payment webhook rejects invalid signature when secret is configured",
     const webhook = await json(webhookRes);
     assertEquals(webhookRes.status, 401);
     assertEquals(webhook.error.code, "UNAUTHENTICATED");
+  } finally {
+    if (prevSecret == null) Deno.env.delete("PAYMENT_WEBHOOK_SECRET");
+    else Deno.env.set("PAYMENT_WEBHOOK_SECRET", prevSecret);
+  }
+});
+
+Deno.test("payment webhook duplicate event still requires valid signature when secret is configured", async () => {
+  __resetForTests();
+  const prevSecret = Deno.env.get("PAYMENT_WEBHOOK_SECRET");
+  Deno.env.set("PAYMENT_WEBHOOK_SECRET", "expected-signature");
+  try {
+    await app.request("http://local.test/api/v1/courts");
+
+    const createRes = await authed("/api/v1/bookings", "player-1", "player", "POST", {
+      courtId: "c1",
+      type: "private",
+      date: "2099-12-14",
+      startTime: "09:00",
+      endTime: "10:00",
+      duration: 60,
+      amount: 500,
+    });
+    const created = await json(createRes);
+    assertEquals(createRes.status, 200);
+
+    const checkoutRes = await authed("/api/v1/payments/checkout", "player-1", "player", "POST", {
+      bookingId: created.data.id,
+      method: "maya",
+    });
+    const checkout = await json(checkoutRes);
+    assertEquals(checkoutRes.status, 200);
+
+    const eventBody = { eventId: "evt-signed-dup-1", txId: checkout.data.id, status: "paid" };
+
+    const firstRes = await app.request("http://local.test/api/v1/payments/webhook", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-payment-signature": "expected-signature",
+      },
+      body: JSON.stringify(eventBody),
+    });
+    assertEquals(firstRes.status, 200);
+
+    const secondRes = await app.request("http://local.test/api/v1/payments/webhook", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-payment-signature": "wrong-signature",
+      },
+      body: JSON.stringify(eventBody),
+    });
+    const secondPayload = await json(secondRes);
+    assertEquals(secondRes.status, 401);
+    assertEquals(secondPayload.error.code, "UNAUTHENTICATED");
   } finally {
     if (prevSecret == null) Deno.env.delete("PAYMENT_WEBHOOK_SECRET");
     else Deno.env.set("PAYMENT_WEBHOOK_SECRET", prevSecret);
@@ -1588,6 +2327,50 @@ Deno.test("player can retry expired payment transaction", async () => {
   assertEquals(retryPayload.data.method, "maya");
 });
 
+Deno.test("player can retry expired payment transaction when bearer auth is required", async () => {
+  __resetForTests();
+  const previous = Deno.env.get("AUTH_REQUIRE_BEARER");
+  Deno.env.set("AUTH_REQUIRE_BEARER", "true");
+  try {
+    await app.request("http://local.test/api/v1/courts");
+
+    const createRes = await authedBearer("/api/v1/bookings", "mock-access-player-1", "POST", {
+      courtId: "c1",
+      type: "private",
+      date: "2099-12-10",
+      startTime: "09:00",
+      endTime: "10:00",
+      duration: 60,
+      amount: 500,
+    });
+    const created = await json(createRes);
+    assertEquals(createRes.status, 200);
+
+    const checkoutRes = await authedBearer("/api/v1/payments/checkout", "mock-access-player-1", "POST", {
+      bookingId: created.data.id,
+      method: "maya",
+    });
+    const checkout = await json(checkoutRes);
+    assertEquals(checkoutRes.status, 200);
+
+    const expireRes = await authedBearer("/api/v1/admin/payments/expire-stale", "mock-access-admin-1", "POST", {
+      dryRun: false,
+      olderThanMinutes: 1,
+      referenceNow: "2100-01-01T00:00:00.000Z",
+    });
+    assertEquals(expireRes.status, 200);
+
+    const retryRes = await authedBearer(`/api/v1/payments/${checkout.data.id}/retry`, "mock-access-player-1", "POST");
+    const retryPayload = await json(retryRes);
+    assertEquals(retryRes.status, 200);
+    assertEquals(retryPayload.data.id === checkout.data.id, false);
+    assertEquals(retryPayload.data.bookingId, created.data.id);
+  } finally {
+    if (previous == null) Deno.env.delete("AUTH_REQUIRE_BEARER");
+    else Deno.env.set("AUTH_REQUIRE_BEARER", previous);
+  }
+});
+
 Deno.test("cannot retry pending payment transaction", async () => {
   __resetForTests();
   await app.request("http://local.test/api/v1/courts");
@@ -1610,6 +2393,45 @@ Deno.test("cannot retry pending payment transaction", async () => {
   });
   const checkout = await json(checkoutRes);
   assertEquals(checkoutRes.status, 200);
+
+  const retryRes = await authed(`/api/v1/payments/${checkout.data.id}/retry`, "player-1", "player", "POST");
+  const retryPayload = await json(retryRes);
+  assertEquals(retryRes.status, 409);
+  assertEquals(retryPayload.error.code, "CONFLICT");
+});
+
+Deno.test("cannot retry payment transaction for cancelled booking", async () => {
+  __resetForTests();
+  await app.request("http://local.test/api/v1/courts");
+
+  const createRes = await authed("/api/v1/bookings", "player-1", "player", "POST", {
+    courtId: "c1",
+    type: "private",
+    date: "2099-11-23",
+    startTime: "10:00",
+    endTime: "11:00",
+    duration: 60,
+    amount: 500,
+  });
+  const created = await json(createRes);
+  assertEquals(createRes.status, 200);
+
+  const checkoutRes = await authed("/api/v1/payments/checkout", "player-1", "player", "POST", {
+    bookingId: created.data.id,
+    method: "maya",
+  });
+  const checkout = await json(checkoutRes);
+  assertEquals(checkoutRes.status, 200);
+
+  const cancelRes = await authed(`/api/v1/bookings/${created.data.id}/cancel`, "player-1", "player", "POST");
+  assertEquals(cancelRes.status, 200);
+
+  const webhookFailedRes = await app.request("http://local.test/api/v1/payments/webhook", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ eventId: "evt-retry-cancelled-1", txId: checkout.data.id, status: "failed" }),
+  });
+  assertEquals(webhookFailedRes.status, 200);
 
   const retryRes = await authed(`/api/v1/payments/${checkout.data.id}/retry`, "player-1", "player", "POST");
   const retryPayload = await json(retryRes);
@@ -1702,7 +2524,7 @@ Deno.test("player cannot access another user's payment transaction", async () =>
   const signupRes = await app.request("http://local.test/api/v1/auth/signup", {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ email: "player3@court.com", role: "player" }),
+    body: JSON.stringify({ email: "player3@court.com", password: "player1", role: "player" }),
   });
   const signupPayload = await json(signupRes);
   assertEquals(signupRes.status, 200);
@@ -2094,6 +2916,68 @@ Deno.test("resolve-by-filter processes matched reconciliation issues", async () 
   const bookingPayload = await json(bookingRes);
   assertEquals(bookingRes.status, 200);
   assertEquals(bookingPayload.data.paymentStatus, "paid");
+});
+
+Deno.test("resolve-by-filter works when bearer auth is required", async () => {
+  __resetForTests();
+  const previous = Deno.env.get("AUTH_REQUIRE_BEARER");
+  Deno.env.set("AUTH_REQUIRE_BEARER", "true");
+  try {
+    await app.request("http://local.test/api/v1/courts");
+
+    const createRes = await authedBearer("/api/v1/bookings", "mock-access-player-1", "POST", {
+      courtId: "c1",
+      type: "private",
+      date: "2099-12-11",
+      startTime: "11:00",
+      endTime: "12:00",
+      duration: 60,
+      amount: 500,
+    });
+    const created = await json(createRes);
+    assertEquals(createRes.status, 200);
+
+    const checkoutRes = await authedBearer("/api/v1/payments/checkout", "mock-access-player-1", "POST", {
+      bookingId: created.data.id,
+      method: "gcash",
+    });
+    const checkout = await json(checkoutRes);
+    assertEquals(checkoutRes.status, 200);
+
+    const webhookRes = await app.request("http://local.test/api/v1/payments/webhook", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ txId: checkout.data.id, status: "paid" }),
+    });
+    assertEquals(webhookRes.status, 200);
+
+    const forceUnpaidRes = await authedBearer(`/api/v1/bookings/${created.data.id}/payment`, "mock-access-staff-1", "POST", {
+      paymentStatus: "unpaid",
+    });
+    assertEquals(forceUnpaidRes.status, 200);
+
+    const resolveRes = await authedBearer(
+      "/api/v1/admin/payments/reconciliation/resolve/by-filter",
+      "mock-access-staff-1",
+      "POST",
+      {
+        issueType: "paid_tx_booking_unpaid",
+        maxItems: 10,
+        dryRun: false,
+      },
+    );
+    const resolvePayload = await json(resolveRes);
+    assertEquals(resolveRes.status, 200);
+    assertEquals(resolvePayload.meta.successCount >= 1, true);
+
+    const bookingRes = await authedBearer(`/api/v1/bookings/${created.data.id}`, "mock-access-player-1", "GET");
+    const bookingPayload = await json(bookingRes);
+    assertEquals(bookingRes.status, 200);
+    assertEquals(bookingPayload.data.paymentStatus, "paid");
+  } finally {
+    if (previous == null) Deno.env.delete("AUTH_REQUIRE_BEARER");
+    else Deno.env.set("AUTH_REQUIRE_BEARER", previous);
+  }
 });
 
 Deno.test("resolve-by-filter validates issue type", async () => {
@@ -3168,7 +4052,7 @@ Deno.test("booking timeline is forbidden for unrelated player", async () => {
   const signupRes = await app.request("http://local.test/api/v1/auth/signup", {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ email: "player3@court.com", role: "player" }),
+    body: JSON.stringify({ email: "player3@court.com", password: "player1", role: "player" }),
   });
   const signupPayload = await json(signupRes);
   assertEquals(signupRes.status, 200);
@@ -3210,7 +4094,7 @@ Deno.test("player can create hold and another player cannot hold same slot", asy
   const signupRes = await app.request("http://local.test/api/v1/auth/signup", {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ email: "player4@court.com", role: "player" }),
+    body: JSON.stringify({ email: "player4@court.com", password: "player1", role: "player" }),
   });
   const signupPayload = await json(signupRes);
   assertEquals(signupRes.status, 200);
@@ -3244,7 +4128,7 @@ Deno.test("booking create is blocked by another user's active hold", async () =>
   const signupRes = await app.request("http://local.test/api/v1/auth/signup", {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ email: "player5@court.com", role: "player" }),
+    body: JSON.stringify({ email: "player5@court.com", password: "player1", role: "player" }),
   });
   const signupPayload = await json(signupRes);
   assertEquals(signupRes.status, 200);

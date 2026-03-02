@@ -1,10 +1,11 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useApp } from '@/context/AppContext';
-import { ArrowLeft, Receipt, Calendar, CreditCard, Download, Filter } from 'lucide-react';
+import { ArrowLeft, Receipt, Calendar, CreditCard, Download, Filter, Eye } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { format } from 'date-fns';
 import { toast } from 'sonner';
 import DatePicker from 'react-datepicker';
+import { backendApi } from '@/context/backendApi';
 import "react-datepicker/dist/react-datepicker.css";
 
 type Transaction = {
@@ -15,20 +16,57 @@ type Transaction = {
   status: string;
   type: 'booking' | 'membership';
   reference: string;
+  bookingId?: string;
 };
 
 export function PaymentHistory() {
   const { currentUser, bookings, subscriptionHistory, memberships, courts } = useApp();
+  const usingBackendApi = backendApi.isEnabled;
   const navigate = useNavigate();
   const [filter, setFilter] = useState<'all' | 'booking' | 'membership'>('all');
   const [dateRange, setDateRange] = useState<[Date | null, Date | null]>([null, null]);
   const [startDate, endDate] = dateRange;
+  const [backendTransactions, setBackendTransactions] = useState<Transaction[]>([]);
+  const [isLoadingBackendTransactions, setIsLoadingBackendTransactions] = useState(false);
 
-  // 1. Transform Bookings into Transactions
+  const loadBackendTransactions = async () => {
+    if (!usingBackendApi || !currentUser) return;
+    setIsLoadingBackendTransactions(true);
+    try {
+      const rows = await backendApi.getPayments({ page: 1, limit: 200 });
+      const txs: Transaction[] = (Array.isArray(rows) ? rows : []).map((tx: any) => {
+        const bookingId = String(tx?.bookingId || '');
+        const booking = bookings.find((b) => b.id === bookingId);
+        const court = booking ? courts.find((c) => c.id === booking.courtId) : null;
+        return {
+          id: String(tx?.id || ''),
+          date: new Date(tx?.createdAt || Date.now()),
+          description: `Payment - ${court?.name || booking?.courtId || bookingId || 'Booking'}`,
+          amount: Number(tx?.amount || 0),
+          status: String(tx?.status || 'pending'),
+          type: 'booking',
+          reference: String(tx?.providerReference || tx?.id || '').toUpperCase(),
+          bookingId: bookingId || undefined,
+        };
+      });
+      setBackendTransactions(txs);
+    } catch (error) {
+      console.error('Failed to load backend payment transactions:', error);
+      toast.error('Failed to load backend payment transactions.');
+    } finally {
+      setIsLoadingBackendTransactions(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!usingBackendApi || !currentUser) return;
+    void loadBackendTransactions();
+  }, [usingBackendApi, currentUser, bookings, courts]);
+
   const bookingTransactions: Transaction[] = bookings
-    .filter(b => b.userId === currentUser?.id)
-    .map(b => {
-      const court = courts.find(c => c.id === b.courtId);
+    .filter((b) => b.userId === currentUser?.id)
+    .map((b) => {
+      const court = courts.find((c) => c.id === b.courtId);
       return {
         id: b.id,
         date: new Date(b.date),
@@ -36,67 +74,116 @@ export function PaymentHistory() {
         amount: b.amount || 0,
         status: b.status === 'confirmed' || b.status === 'completed' ? 'paid' : b.status,
         type: 'booking',
-        reference: `BK-${b.id.slice(0, 8).toUpperCase()}`
+        reference: `BK-${b.id.slice(0, 8).toUpperCase()}`,
+        bookingId: b.id,
       };
     });
 
-  // 2. Transform Subscriptions into Transactions
-  const subTransactions: Transaction[] = subscriptionHistory.map(s => {
-    const plan = memberships.find(m => m.id === s.membership_id);
+  const subTransactions: Transaction[] = subscriptionHistory.map((s) => {
+    const plan = memberships.find((m) => m.id === s.membership_id);
     return {
       id: s.id,
-      date: new Date(s.start_date), // Using start date as transaction date
+      date: new Date(s.start_date),
       description: `Membership Subscription - ${plan?.name || 'Unknown Plan'}`,
       amount: s.amount_paid,
       status: 'paid',
       type: 'membership',
-      reference: `SUB-${s.id.slice(0, 8).toUpperCase()}`
+      reference: `SUB-${s.id.slice(0, 8).toUpperCase()}`,
     };
   });
 
-  // 3. Combine and Sort
-  const allTransactions = [...bookingTransactions, ...subTransactions]
-    .filter(t => {
+  const sourceTransactions = usingBackendApi ? backendTransactions : [...bookingTransactions, ...subTransactions];
+  const allTransactions = sourceTransactions
+    .filter((t) => {
       const matchesType = filter === 'all' || t.type === filter;
       let matchesDate = true;
-      if (startDate) {
-        matchesDate = matchesDate && t.date >= startDate;
-      }
-      if (endDate) {
-        matchesDate = matchesDate && t.date <= new Date(endDate.getTime() + 86400000 - 1);
-      }
+      if (startDate) matchesDate = matchesDate && t.date >= startDate;
+      if (endDate) matchesDate = matchesDate && t.date <= new Date(endDate.getTime() + 86400000 - 1);
       return matchesType && matchesDate;
     })
     .sort((a, b) => b.date.getTime() - a.date.getTime());
 
   const totalSpent = allTransactions
-    .filter(t => t.status === 'paid' || t.status === 'completed')
+    .filter((t) => t.status === 'paid' || t.status === 'completed')
     .reduce((sum, t) => sum + t.amount, 0);
 
-  const handleDownloadInvoice = (transaction: Transaction) => {
-    const invoiceContent = `
+  const downloadText = (filename: string, content: string) => {
+    const blob = new Blob([content], { type: 'text/plain' });
+    const url = window.URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    window.URL.revokeObjectURL(url);
+    document.body.removeChild(a);
+  };
+
+  const handleDownloadInvoice = async (transaction: Transaction) => {
+    if (usingBackendApi && transaction.bookingId) {
+      try {
+        const receipt = await backendApi.getBookingReceipt(transaction.bookingId);
+        const content = `
+INVOICE
+-------
+Booking ID: ${String(receipt?.booking?.id || transaction.bookingId)}
+Receipt Token: ${String(receipt?.receiptToken || '')}
+Date: ${String(receipt?.booking?.date || format(transaction.date, 'yyyy-MM-dd'))} ${String(receipt?.booking?.startTime || '')}
+Court: ${String(receipt?.court?.name || 'Unknown Court')}
+Player: ${String(receipt?.player?.name || currentUser?.name || '')}
+Amount: PHP ${Number(receipt?.amount ?? transaction.amount).toFixed(2)}
+Payment Status: ${String(receipt?.paymentStatus || transaction.status).toUpperCase()}
+Booking Status: ${String(receipt?.bookingStatus || '').toUpperCase()}
+`.trim();
+        downloadText(`Receipt-${String(receipt?.booking?.id || transaction.bookingId)}.txt`, content);
+        toast.success('Receipt downloaded');
+        return;
+      } catch (error) {
+        console.error('Failed to load receipt from backend:', error);
+      }
+    }
+
+    const content = `
 INVOICE
 -------
 Reference: ${transaction.reference}
 Date: ${format(transaction.date, 'MMM dd, yyyy HH:mm')}
 Description: ${transaction.description}
-Amount: ₱${transaction.amount.toFixed(2)}
+Amount: PHP ${transaction.amount.toFixed(2)}
 Status: ${transaction.status.toUpperCase()}
 
 Thank you for your business!
 `.trim();
-
-    const blob = new Blob([invoiceContent], { type: 'text/plain' });
-    const url = window.URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `Invoice-${transaction.reference}.txt`;
-    document.body.appendChild(a);
-    a.click();
-    window.URL.revokeObjectURL(url);
-    document.body.removeChild(a);
-    
+    downloadText(`Invoice-${transaction.reference}.txt`, content);
     toast.success('Invoice downloaded');
+  };
+
+  const handleRetryPayment = async (transaction: Transaction) => {
+    if (!usingBackendApi) return;
+    try {
+      const payload = await backendApi.retryPayment(transaction.id);
+      const checkoutUrl = String(payload?.checkoutUrl || '').trim();
+      if (checkoutUrl) window.open(checkoutUrl, '_blank', 'noopener,noreferrer');
+      toast.success('Retry checkout created.');
+      await loadBackendTransactions();
+    } catch (error) {
+      console.error('Failed to retry payment:', error);
+      toast.error('Failed to retry payment.');
+    }
+  };
+
+  const handleViewPaymentDetails = async (transaction: Transaction) => {
+    if (!usingBackendApi) return;
+    try {
+      const details = await backendApi.getPaymentById(transaction.id);
+      const status = String(details?.status || transaction.status).toUpperCase();
+      const reference = String(details?.providerReference || details?.id || transaction.reference);
+      const amount = Number(details?.amount ?? transaction.amount).toFixed(2);
+      toast.success(`Payment ${reference}: ${status} (PHP ${amount})`);
+    } catch (error) {
+      console.error('Failed to load payment details:', error);
+      toast.error('Failed to load payment details.');
+    }
   };
 
   const handleExportCSV = () => {
@@ -104,22 +191,16 @@ Thank you for your business!
       toast.error('No transactions to export');
       return;
     }
-
     const headers = ['Date', 'Reference', 'Description', 'Type', 'Status', 'Amount'];
-    const rows = allTransactions.map(t => [
+    const rows = allTransactions.map((t) => [
       format(t.date, 'yyyy-MM-dd HH:mm'),
       t.reference,
       `"${t.description.replace(/"/g, '""')}"`,
       t.type,
       t.status,
-      t.amount.toFixed(2)
+      t.amount.toFixed(2),
     ]);
-
-    const csvContent = [
-      headers.join(','),
-      ...rows.map(row => row.join(','))
-    ].join('\n');
-
+    const csvContent = [headers.join(','), ...rows.map((row) => row.join(','))].join('\n');
     const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
@@ -128,7 +209,6 @@ Thank you for your business!
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
-    
     toast.success('Transactions exported to CSV');
   };
 
@@ -150,47 +230,45 @@ Thank you for your business!
       </header>
 
       <div className="max-w-7xl mx-auto px-4 py-8 space-y-6">
-        {/* Summary Card */}
         <div className="bg-teal-600 rounded-2xl p-8 text-white shadow-lg shadow-teal-100 dark:shadow-none flex items-center justify-between">
           <div>
             <p className="text-teal-100 mb-1">Total Spent</p>
-            <h2 className="text-4xl font-bold">₱{totalSpent.toLocaleString()}</h2>
+            <h2 className="text-4xl font-bold">PHP {totalSpent.toLocaleString()}</h2>
           </div>
           <div className="w-16 h-16 bg-white/20 rounded-2xl flex items-center justify-center backdrop-blur-sm">
             <Receipt size={32} />
           </div>
         </div>
 
-        {/* Filters */}
         <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
           <div className="flex flex-col sm:flex-row sm:items-center gap-4">
-          <div className="flex items-center gap-2">
-            <Filter size={16} className="text-slate-400" />
-            <span className="text-sm font-medium text-slate-600 dark:text-slate-400">Type:</span>
-            <select 
-              value={filter}
-              onChange={(e) => setFilter(e.target.value as any)}
-              className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg px-3 py-1.5 text-sm focus:ring-2 focus:ring-teal-500 outline-none"
-            >
-              <option value="all">All Transactions</option>
-              <option value="booking">Bookings</option>
-              <option value="membership">Memberships</option>
-            </select>
-          </div>
-          <div className="flex items-center gap-2">
-            <span className="text-sm font-medium text-slate-600 dark:text-slate-400">Date:</span>
-            <div className="relative z-10">
-              <DatePicker
-                selectsRange={true}
-                startDate={startDate}
-                endDate={endDate}
-                onChange={(update) => setDateRange(update)}
-                isClearable={true}
-                placeholderText="Filter by date range"
-                className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg px-3 py-1.5 text-sm focus:ring-2 focus:ring-teal-500 outline-none w-full sm:w-56"
-              />
+            <div className="flex items-center gap-2">
+              <Filter size={16} className="text-slate-400" />
+              <span className="text-sm font-medium text-slate-600 dark:text-slate-400">Type:</span>
+              <select
+                value={filter}
+                onChange={(e) => setFilter(e.target.value as any)}
+                className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg px-3 py-1.5 text-sm focus:ring-2 focus:ring-teal-500 outline-none"
+              >
+                <option value="all">All Transactions</option>
+                <option value="booking">Bookings</option>
+                <option value="membership">Memberships</option>
+              </select>
             </div>
-          </div>
+            <div className="flex items-center gap-2">
+              <span className="text-sm font-medium text-slate-600 dark:text-slate-400">Date:</span>
+              <div className="relative z-10">
+                <DatePicker
+                  selectsRange={true}
+                  startDate={startDate}
+                  endDate={endDate}
+                  onChange={(update) => setDateRange(update)}
+                  isClearable={true}
+                  placeholderText="Filter by date range"
+                  className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg px-3 py-1.5 text-sm focus:ring-2 focus:ring-teal-500 outline-none w-full sm:w-56"
+                />
+              </div>
+            </div>
           </div>
           <button
             onClick={handleExportCSV}
@@ -200,8 +278,12 @@ Thank you for your business!
             Export CSV
           </button>
         </div>
+        {usingBackendApi && (
+          <p className="text-xs text-slate-500 dark:text-slate-400">
+            {isLoadingBackendTransactions ? 'Syncing transactions from backend...' : 'Using backend transaction records.'}
+          </p>
+        )}
 
-        {/* Transactions List */}
         <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm overflow-hidden">
           {allTransactions.length === 0 ? (
             <div className="p-12 text-center text-slate-500 dark:text-slate-400">
@@ -218,21 +300,40 @@ Thank you for your business!
                     </div>
                     <div>
                       <h3 className="font-bold text-slate-900 dark:text-white">{t.description}</h3>
-                      <p className="text-sm text-slate-500 dark:text-slate-400">{format(t.date, 'MMM dd, yyyy • HH:mm')} • <span className="font-mono text-xs">{t.reference}</span></p>
+                      <p className="text-sm text-slate-500 dark:text-slate-400">{format(t.date, 'MMM dd, yyyy | HH:mm')} | <span className="font-mono text-xs">{t.reference}</span></p>
                     </div>
                   </div>
                   <div className="flex items-center gap-6">
                     <div className="text-right">
-                      <p className="font-bold text-slate-900 dark:text-white">₱{t.amount.toFixed(2)}</p>
+                      <p className="font-bold text-slate-900 dark:text-white">PHP {t.amount.toFixed(2)}</p>
                       <p className={`text-xs font-bold uppercase ${t.status === 'paid' ? 'text-emerald-600' : 'text-slate-400'}`}>{t.status}</p>
                     </div>
-                    {t.status === 'paid' && (
-                      <button 
-                        onClick={() => handleDownloadInvoice(t)}
+                    {(t.status === 'paid' || (usingBackendApi && !!t.bookingId)) && (
+                      <button
+                        onClick={() => void handleDownloadInvoice(t)}
                         className="p-2 text-slate-400 hover:text-teal-600 hover:bg-teal-50 dark:hover:bg-teal-900/20 rounded-full transition-colors"
                         title="Download Invoice"
                       >
                         <Download size={20} />
+                      </button>
+                    )}
+                    {usingBackendApi && t.type === 'booking' && (
+                      <button
+                        onClick={() => void handleViewPaymentDetails(t)}
+                        className="px-3 py-1.5 rounded-lg bg-slate-100 text-slate-700 text-xs font-semibold hover:bg-slate-200 transition-colors"
+                        title="View payment details"
+                      >
+                        <Eye size={14} className="inline mr-1" />
+                        Details
+                      </button>
+                    )}
+                    {usingBackendApi && ['failed', 'expired', 'cancelled'].includes(t.status) && (
+                      <button
+                        onClick={() => void handleRetryPayment(t)}
+                        className="px-3 py-1.5 rounded-lg bg-amber-100 text-amber-800 text-xs font-semibold hover:bg-amber-200 transition-colors"
+                        title="Retry Payment"
+                      >
+                        Retry
                       </button>
                     )}
                   </div>

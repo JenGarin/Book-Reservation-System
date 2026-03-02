@@ -1,6 +1,7 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useApp } from '@/context/AppContext';
+import { backendApi } from '@/context/backendApi';
 import {
   CalendarDays,
   Users,
@@ -46,6 +47,8 @@ export function CoachPortalView() {
   const { currentUser, bookings, users, courts, confirmBooking, cancelBooking } = useApp();
   const navigate = useNavigate();
   const [activeTab, setActiveTab] = useState<'sessions' | 'students' | 'schedule'>('sessions');
+  const [backendPendingApplications, setBackendPendingApplications] = useState<any[]>([]);
+  const [isApplicationsLoading, setIsApplicationsLoading] = useState(false);
 
   const coachSessions = useMemo(
     () =>
@@ -107,7 +110,7 @@ export function CoachPortalView() {
   }, [coachSessions, users]);
 
   const totalEarnings = coachSessions.reduce((sum, s) => sum + (s.amount || 0), 0);
-  const pendingApplications = useMemo(
+  const localPendingApplications = useMemo(
     () =>
       bookings
         .filter(
@@ -119,6 +122,58 @@ export function CoachPortalView() {
         .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime()),
     [bookings, currentUser]
   );
+
+  useEffect(() => {
+    let active = true;
+    if (!backendApi.isEnabled || currentUser?.role !== 'coach') {
+      setBackendPendingApplications([]);
+      return;
+    }
+    setIsApplicationsLoading(true);
+    backendApi
+      .getCoachApplications({ status: 'pending' })
+      .then((rows) => {
+        if (!active) return;
+        setBackendPendingApplications(rows);
+      })
+      .catch(() => {
+        if (!active) return;
+        setBackendPendingApplications([]);
+      })
+      .finally(() => {
+        if (!active) return;
+        setIsApplicationsLoading(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [currentUser]);
+
+  const pendingApplications = useMemo(() => {
+    if (!backendApi.isEnabled) {
+      return localPendingApplications.map((booking) => ({
+        id: booking.id,
+        playerId: booking.userId,
+        sport: COURT_META[booking.courtId]?.sport || 'Training',
+        createdAt: booking.createdAt,
+        displayDate: `${format(booking.date, 'EEE, MMM dd yyyy')} · ${booking.startTime}-${booking.endTime}`,
+        displayLocation: courts.find((c) => c.id === booking.courtId)?.name || 'Court',
+        notes: booking.notes,
+        source: 'booking' as const,
+      }));
+    }
+
+    return backendPendingApplications.map((application) => ({
+      id: String(application?.id || ''),
+      playerId: String(application?.playerId || ''),
+      sport: String(application?.sport || 'Training'),
+      createdAt: new Date(application?.createdAt || Date.now()),
+      displayDate: `Applied ${format(new Date(application?.createdAt || Date.now()), 'EEE, MMM dd yyyy')}`,
+      displayLocation: String(application?.preferredSchedule || 'No preferred schedule provided'),
+      notes: String(application?.message || ''),
+      source: 'coach_application' as const,
+    }));
+  }, [backendPendingApplications, courts, localPendingApplications]);
 
   const sessionCards = upcomingSessions.slice(0, 4);
   const studentCards = useMemo(() => {
@@ -174,18 +229,28 @@ export function CoachPortalView() {
 
   const scheduleCards = upcomingSessions.slice(0, 8);
 
-  const handleApproveApplication = async (bookingId: string) => {
+  const handleApproveApplication = async (applicationId: string, source: 'booking' | 'coach_application') => {
     try {
-      await confirmBooking(bookingId);
+      if (source === 'coach_application' && backendApi.isEnabled) {
+        await backendApi.approveCoachApplication(applicationId);
+        setBackendPendingApplications((prev) => prev.filter((item) => String(item?.id || '') !== applicationId));
+      } else {
+        await confirmBooking(applicationId);
+      }
       toast.success('Application approved.');
     } catch {
       toast.error('Failed to approve application.');
     }
   };
 
-  const handleDeclineApplication = async (bookingId: string) => {
+  const handleDeclineApplication = async (applicationId: string, source: 'booking' | 'coach_application') => {
     try {
-      await cancelBooking(bookingId);
+      if (source === 'coach_application' && backendApi.isEnabled) {
+        await backendApi.rejectCoachApplication(applicationId);
+        setBackendPendingApplications((prev) => prev.filter((item) => String(item?.id || '') !== applicationId));
+      } else {
+        await cancelBooking(applicationId);
+      }
       toast.success('Application declined.');
     } catch {
       toast.error('Failed to decline application.');
@@ -254,10 +319,12 @@ export function CoachPortalView() {
           {pendingApplications.length === 0 && (
             <p className="text-slate-600 dark:text-slate-400 text-base">No pending applications from players.</p>
           )}
+          {isApplicationsLoading && (
+            <p className="text-slate-600 dark:text-slate-400 text-base">Loading applications...</p>
+          )}
 
           {pendingApplications.slice(0, 6).map((application) => {
-            const player = users.find((u) => u.id === application.userId);
-            const court = courts.find((c) => c.id === application.courtId);
+            const player = users.find((u) => u.id === application.playerId);
             return (
               <article
                 key={application.id}
@@ -267,22 +334,23 @@ export function CoachPortalView() {
                   <p className="text-lg font-semibold text-slate-900 dark:text-slate-100">{player?.name || 'Player'}</p>
                   <p className="text-sm text-slate-600 dark:text-slate-400">{player?.email || 'No email available'}</p>
                   <p className="text-sm text-slate-700 dark:text-slate-300 mt-2">
-                    {format(application.date, 'EEE, MMM dd yyyy')} · {application.startTime}-{application.endTime}
+                    {application.displayDate}
                   </p>
-                  <p className="text-sm text-slate-700 dark:text-slate-300">{court?.name || 'Court'}</p>
+                  <p className="text-sm text-slate-700 dark:text-slate-300">{application.sport}</p>
+                  <p className="text-sm text-slate-700 dark:text-slate-300">{application.displayLocation}</p>
                   {application.notes && (
                     <p className="text-sm text-slate-600 dark:text-slate-400 mt-1">Notes: {application.notes}</p>
                   )}
                 </div>
                 <div className="flex items-center gap-2">
                   <button
-                    onClick={() => handleDeclineApplication(application.id)}
+                    onClick={() => handleDeclineApplication(application.id, application.source)}
                     className="px-3 py-2 rounded-xl bg-rose-100 text-rose-700 text-sm font-semibold hover:bg-rose-200"
                   >
                     Decline
                   </button>
                   <button
-                    onClick={() => handleApproveApplication(application.id)}
+                    onClick={() => handleApproveApplication(application.id, application.source)}
                     className="px-3 py-2 rounded-xl bg-emerald-100 text-emerald-700 text-sm font-semibold hover:bg-emerald-200"
                   >
                     Approve

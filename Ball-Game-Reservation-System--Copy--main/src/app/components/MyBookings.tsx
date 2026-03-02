@@ -12,14 +12,14 @@ const COURT_META: Record<string, { location: string; sport: string }> = {
 };
 
 export function MyBookings() {
-  const { currentUser, bookings, courts, cancelBooking } = useApp();
+  const { currentUser, bookings, courts, cancelBooking, leaveSession } = useApp();
   const location = useLocation();
   const navigate = useNavigate();
 
   const activeBookings = useMemo(
     () =>
       bookings
-        .filter((b) => b.userId === currentUser?.id)
+        .filter((b) => b.userId === currentUser?.id || (b.players || []).includes(currentUser?.id || ''))
         .filter((b) => !(b.date < new Date() || b.status === 'completed' || b.status === 'cancelled' || b.status === 'no_show'))
         .sort((a, b) => a.date.getTime() - b.date.getTime()),
     [bookings, currentUser]
@@ -29,6 +29,16 @@ export function MyBookings() {
     if (confirm('Are you sure you want to cancel this booking?')) {
       cancelBooking(bookingId);
       toast.success('Booking cancelled successfully');
+    }
+  };
+
+  const handleLeaveSession = async (bookingId: string) => {
+    if (!confirm('Leave this session?')) return;
+    try {
+      await leaveSession(bookingId);
+      toast.success('You left the session.');
+    } catch (error: any) {
+      toast.error(error?.message || 'Failed to leave session.');
     }
   };
 
@@ -77,6 +87,8 @@ export function MyBookings() {
               {activeBookings.map((booking) => {
                 const court = courts.find((c) => c.id === booking.courtId);
                 const meta = COURT_META[booking.courtId] || { location: court?.name || 'Court Location', sport: 'General' };
+                const isJoinedSession =
+                  booking.userId !== currentUser?.id && (booking.players || []).includes(currentUser?.id || '');
                 const ratePerHour = court?.hourlyRate || 0;
 
                 return (
@@ -86,7 +98,7 @@ export function MyBookings() {
                         <h3 className="text-xl font-bold text-slate-900 dark:text-slate-100">{court?.name || 'Unknown Court'}</h3>
                         <div className="flex items-center gap-2 mt-1">
                           <span className="inline-flex items-center px-3 py-1 rounded-full bg-slate-900 dark:bg-slate-700 text-white text-xs font-semibold">
-                            Upcoming
+                            {isJoinedSession ? 'Joined Session' : 'Upcoming'}
                           </span>
                           <span className={`inline-flex items-center px-2.5 py-1 rounded-full text-[11px] font-bold uppercase ${getStatusColor(booking.status)}`}>
                             {booking.status.replace('_', ' ')}
@@ -118,13 +130,23 @@ export function MyBookings() {
 
                       {(booking.status === 'confirmed' || booking.status === 'pending') && booking.date >= new Date() && (
                         <div className="flex gap-2">
-                          <button
-                            onClick={() => handleCancel(booking.id)}
-                            className="px-3 py-2 bg-rose-100 text-rose-700 rounded-lg hover:bg-rose-200 transition-colors text-sm font-semibold inline-flex items-center gap-1"
-                          >
-                            <X className="w-4 h-4" />
-                            Cancel
-                          </button>
+                          {isJoinedSession ? (
+                            <button
+                              onClick={() => void handleLeaveSession(booking.id)}
+                              className="px-3 py-2 bg-rose-100 text-rose-700 rounded-lg hover:bg-rose-200 transition-colors text-sm font-semibold inline-flex items-center gap-1"
+                            >
+                              <X className="w-4 h-4" />
+                              Leave Session
+                            </button>
+                          ) : (
+                            <button
+                              onClick={() => handleCancel(booking.id)}
+                              className="px-3 py-2 bg-rose-100 text-rose-700 rounded-lg hover:bg-rose-200 transition-colors text-sm font-semibold inline-flex items-center gap-1"
+                            >
+                              <X className="w-4 h-4" />
+                              Cancel
+                            </button>
+                          )}
                           {!booking.checkedIn && (
                             <button
                               onClick={() => navigate('/check-in', { state: { from: `${location.pathname}${location.search}` } })}

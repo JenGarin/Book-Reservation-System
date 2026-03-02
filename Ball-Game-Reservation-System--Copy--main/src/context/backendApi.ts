@@ -148,10 +148,10 @@ const writeSession = (session: ApiSession | null) => {
   );
 };
 
-const request = async <T>(
+const requestEnvelope = async <T>(
   path: string,
   options: { method?: string; body?: unknown; auth?: boolean } = {},
-): Promise<T> => {
+): Promise<ApiEnvelope<T>> => {
   const session = readSession();
   const headers: Record<string, string> = {
     "content-type": "application/json",
@@ -172,6 +172,14 @@ const request = async <T>(
     const message = payload?.error?.message || "Request failed.";
     throw new Error(message);
   }
+  return payload;
+};
+
+const request = async <T>(
+  path: string,
+  options: { method?: string; body?: unknown; auth?: boolean } = {},
+): Promise<T> => {
+  const payload = await requestEnvelope<T>(path, options);
   return payload.data;
 };
 
@@ -230,6 +238,14 @@ export const backendApi = {
     });
   },
 
+  async changePassword(currentPassword: string, newPassword: string) {
+    ensureBackendEnabled();
+    return await request<{ changed: boolean }>("/auth/change-password", {
+      method: "POST",
+      body: { currentPassword, newPassword },
+    });
+  },
+
   async oauthStart(provider: "google" | "facebook", expectedRole: Role, redirectUri?: string) {
     ensureBackendEnabled();
     return await request<{ provider: string; expectedRole: string; redirectUrl: string }>("/auth/oauth/start", {
@@ -241,6 +257,24 @@ export const backendApi = {
         redirectUri,
       },
     });
+  },
+
+  async oauthCallback(state: string) {
+    ensureBackendEnabled();
+    const data = await request<any>("/auth/oauth/callback", {
+      method: "POST",
+      auth: false,
+      body: {
+        state,
+      },
+    });
+    const session: ApiSession = {
+      accessToken: String(data?.accessToken || ""),
+      refreshToken: data?.refreshToken ? String(data.refreshToken) : undefined,
+      user: mapUser(data?.user || {}),
+    };
+    writeSession(session);
+    return session.user;
   },
 
   async getUsers(role: Role) {
@@ -344,6 +378,60 @@ export const backendApi = {
     return mapUser(data);
   },
 
+  async updateCoachProfile(payload: {
+    avatar?: string;
+    coachProfile?: string;
+    coachExpertise?: string[];
+  }) {
+    ensureBackendEnabled();
+    const data = await request<any>("/coach/profile", {
+      method: "PATCH",
+      body: payload,
+    });
+    return mapUser(data);
+  },
+
+  async submitCoachVerification(payload: {
+    method: "certification" | "license" | "experience" | "other";
+    documentName: string;
+    verificationId?: string;
+    notes?: string;
+  }) {
+    ensureBackendEnabled();
+    const data = await request<any>("/coach/verification/submit", {
+      method: "POST",
+      body: payload,
+    });
+    return mapUser(data);
+  },
+
+  async getCoachVerificationQueue(filters: { status?: "unverified" | "pending" | "verified" | "rejected" } = {}) {
+    ensureBackendEnabled();
+    const params = new URLSearchParams();
+    if (filters.status) params.set("status", filters.status);
+    const query = params.toString();
+    const data = await request<any[]>(`/admin/coaches/verification${query ? `?${query}` : ""}`);
+    return Array.isArray(data) ? data.map(mapUser) : [];
+  },
+
+  async approveCoachVerification(id: string, notes?: string) {
+    ensureBackendEnabled();
+    const data = await request<any>(`/admin/coaches/${encodeURIComponent(id)}/verification/approve`, {
+      method: "POST",
+      body: notes ? { notes } : {},
+    });
+    return mapUser(data);
+  },
+
+  async rejectCoachVerification(id: string, reason?: string) {
+    ensureBackendEnabled();
+    const data = await request<any>(`/admin/coaches/${encodeURIComponent(id)}/verification/reject`, {
+      method: "POST",
+      body: reason ? { reason } : {},
+    });
+    return mapUser(data);
+  },
+
   async getNotifications() {
     ensureBackendEnabled();
     const data = await request<any[]>("/notifications?page=1&limit=200");
@@ -440,6 +528,109 @@ export const backendApi = {
     return mapBooking(data);
   },
 
+  async getCoachEligibleStudents(filters: { sport?: string; courtId?: string } = {}) {
+    ensureBackendEnabled();
+    const params = new URLSearchParams();
+    if (filters.sport) params.set("sport", filters.sport);
+    if (filters.courtId) params.set("courtId", filters.courtId);
+    const query = params.toString();
+    const data = await request<any[]>(`/coach/sessions/eligible-students${query ? `?${query}` : ""}`);
+    return Array.isArray(data)
+      ? data.map((item) => ({
+          playerId: String(item?.playerId || ""),
+          applicationId: String(item?.applicationId || ""),
+          sport: String(item?.sport || ""),
+          player: mapUser(item?.player || {}),
+        }))
+      : [];
+  },
+
+  async createCoachSession(payload: {
+    courtId: string;
+    date: Date | string;
+    startTime: string;
+    endTime: string;
+    duration: number;
+    maxPlayers: number;
+    amount?: number;
+    notes?: string;
+    sport?: string;
+    players?: string[];
+    autoEnrollApproved?: boolean;
+  }) {
+    ensureBackendEnabled();
+    const data = await request<any>("/coach/sessions", {
+      method: "POST",
+      body: {
+        courtId: payload.courtId,
+        date: payload.date instanceof Date ? payload.date.toISOString().slice(0, 10) : String(payload.date),
+        startTime: payload.startTime,
+        endTime: payload.endTime,
+        duration: payload.duration,
+        maxPlayers: payload.maxPlayers,
+        amount: payload.amount ?? 0,
+        notes: payload.notes,
+        sport: payload.sport,
+        players: payload.players,
+        autoEnrollApproved: payload.autoEnrollApproved,
+      },
+    });
+    return mapBooking(data);
+  },
+
+  async deleteCoachSession(id: string) {
+    ensureBackendEnabled();
+    await request(`/coach/sessions/${encodeURIComponent(id)}`, { method: "DELETE" });
+  },
+
+  async createCoachApplication(payload: {
+    coachId: string;
+    sport: string;
+    message?: string;
+    preferredSchedule?: string;
+  }) {
+    ensureBackendEnabled();
+    return await request<any>("/coach/applications", {
+      method: "POST",
+      body: payload,
+    });
+  },
+
+  async getCoachApplications(filters: { status?: string; sport?: string } = {}) {
+    ensureBackendEnabled();
+    const params = new URLSearchParams();
+    if (filters.status) params.set("status", filters.status);
+    if (filters.sport) params.set("sport", filters.sport);
+    const query = params.toString();
+    const data = await request<any[]>(`/coach/applications${query ? `?${query}` : ""}`);
+    return Array.isArray(data) ? data : [];
+  },
+
+  async getMyCoachApplications(filters: { status?: string } = {}) {
+    ensureBackendEnabled();
+    const params = new URLSearchParams();
+    if (filters.status) params.set("status", filters.status);
+    const query = params.toString();
+    const data = await request<any[]>(`/coach/applications/me${query ? `?${query}` : ""}`);
+    return Array.isArray(data) ? data : [];
+  },
+
+  async approveCoachApplication(id: string, reviewNote?: string) {
+    ensureBackendEnabled();
+    return await request<any>(`/coach/applications/${encodeURIComponent(id)}/approve`, {
+      method: "POST",
+      body: reviewNote ? { reviewNote } : {},
+    });
+  },
+
+  async rejectCoachApplication(id: string, reason?: string) {
+    ensureBackendEnabled();
+    return await request<any>(`/coach/applications/${encodeURIComponent(id)}/reject`, {
+      method: "POST",
+      body: reason ? { reason } : {},
+    });
+  },
+
   async subscribe(planId: string, paymentMethod = "card") {
     ensureBackendEnabled();
     return await request<any>("/subscriptions", {
@@ -452,6 +643,52 @@ export const backendApi = {
     ensureBackendEnabled();
     const data = await request<any[]>("/subscriptions/me");
     return Array.isArray(data) ? data : [];
+  },
+
+  async createPaymentCheckout(bookingId: string, method: "maya" | "gcash") {
+    ensureBackendEnabled();
+    return await request<any>("/payments/checkout", {
+      method: "POST",
+      body: { bookingId, method },
+    });
+  },
+
+  async getPayments(filters: {
+    page?: number;
+    limit?: number;
+    status?: "created" | "pending" | "paid" | "failed" | "expired" | "cancelled";
+    method?: "maya" | "gcash";
+    bookingId?: string;
+    userId?: string;
+  } = {}) {
+    ensureBackendEnabled();
+    const params = new URLSearchParams();
+    if (filters.page != null) params.set("page", String(filters.page));
+    if (filters.limit != null) params.set("limit", String(filters.limit));
+    if (filters.status) params.set("status", filters.status);
+    if (filters.method) params.set("method", filters.method);
+    if (filters.bookingId) params.set("bookingId", filters.bookingId);
+    if (filters.userId) params.set("userId", filters.userId);
+    const query = params.toString();
+    return await request<any[]>(`/payments${query ? `?${query}` : ""}`);
+  },
+
+  async getPaymentById(id: string) {
+    ensureBackendEnabled();
+    return await request<any>(`/payments/${encodeURIComponent(id)}`);
+  },
+
+  async getBookingReceipt(bookingId: string) {
+    ensureBackendEnabled();
+    return await request<any>(`/bookings/${encodeURIComponent(bookingId)}/receipt`);
+  },
+
+  async retryPayment(id: string) {
+    ensureBackendEnabled();
+    return await request<any>(`/payments/${encodeURIComponent(id)}/retry`, {
+      method: "POST",
+      body: {},
+    });
   },
 
   async getAvailableSlots(courtId: string, date: Date, bookingType: "open_play" | "private" | "training" = "private") {
@@ -567,5 +804,319 @@ export const backendApi = {
       method: "POST",
       body: {},
     });
+  },
+
+  async getAuditLogs(filters: {
+    action?: string;
+    entityType?: string;
+    entityId?: string;
+    actorId?: string;
+    dateFrom?: string;
+    dateTo?: string;
+    page?: number;
+    limit?: number;
+  } = {}) {
+    ensureBackendEnabled();
+    const params = new URLSearchParams();
+    if (filters.action) params.set("action", filters.action);
+    if (filters.entityType) params.set("entityType", filters.entityType);
+    if (filters.entityId) params.set("entityId", filters.entityId);
+    if (filters.actorId) params.set("actorId", filters.actorId);
+    if (filters.dateFrom) params.set("dateFrom", filters.dateFrom);
+    if (filters.dateTo) params.set("dateTo", filters.dateTo);
+    if (filters.page != null) params.set("page", String(filters.page));
+    if (filters.limit != null) params.set("limit", String(filters.limit));
+    const query = params.toString();
+    return await request<any[]>(`/admin/audit-logs${query ? `?${query}` : ""}`);
+  },
+
+  async exportAuditLogs(filters: {
+    format?: "json" | "csv";
+    action?: string;
+    entityType?: string;
+    entityId?: string;
+    actorId?: string;
+    dateFrom?: string;
+    dateTo?: string;
+  } = {}) {
+    ensureBackendEnabled();
+    const params = new URLSearchParams();
+    params.set("format", filters.format || "json");
+    if (filters.action) params.set("action", filters.action);
+    if (filters.entityType) params.set("entityType", filters.entityType);
+    if (filters.entityId) params.set("entityId", filters.entityId);
+    if (filters.actorId) params.set("actorId", filters.actorId);
+    if (filters.dateFrom) params.set("dateFrom", filters.dateFrom);
+    if (filters.dateTo) params.set("dateTo", filters.dateTo);
+    return await request<any>(`/admin/audit-logs/export?${params.toString()}`);
+  },
+
+  async purgeAuditLogs(beforeDate: string, dryRun = true) {
+    ensureBackendEnabled();
+    return await request<any>("/admin/audit-logs/purge", {
+      method: "POST",
+      body: {
+        beforeDate,
+        dryRun,
+      },
+    });
+  },
+
+  async getPaymentsHealth() {
+    ensureBackendEnabled();
+    return await request<any>("/admin/payments/health");
+  },
+
+  async expireStalePayments(payload: {
+    dryRun?: boolean;
+    olderThanMinutes?: number;
+    referenceNow?: string;
+  } = {}) {
+    ensureBackendEnabled();
+    return await request<any>("/admin/payments/expire-stale", {
+      method: "POST",
+      body: payload,
+    });
+  },
+
+  async getUnpaidBookingMonitor(filters: {
+    status?: "all" | "overdue" | "at_risk";
+    windowMinutes?: number;
+    referenceNow?: string;
+  } = {}) {
+    ensureBackendEnabled();
+    const params = new URLSearchParams();
+    if (filters.status) params.set("status", filters.status);
+    if (filters.windowMinutes != null) params.set("windowMinutes", String(filters.windowMinutes));
+    if (filters.referenceNow) params.set("referenceNow", filters.referenceNow);
+    const query = params.toString();
+    return await request<any[]>(`/admin/bookings/unpaid-monitor${query ? `?${query}` : ""}`);
+  },
+
+  async getPaymentReconciliation(filters: {
+    issueType?: string;
+    page?: number;
+    limit?: number;
+  } = {}) {
+    ensureBackendEnabled();
+    const params = new URLSearchParams();
+    if (filters.issueType) params.set("issueType", filters.issueType);
+    if (filters.page != null) params.set("page", String(filters.page));
+    if (filters.limit != null) params.set("limit", String(filters.limit));
+    const query = params.toString();
+    return await request<any[]>(`/admin/payments/reconciliation${query ? `?${query}` : ""}`);
+  },
+
+  async exportPaymentReconciliation(filters: {
+    format?: "json" | "csv";
+    issueType?: string;
+  } = {}) {
+    ensureBackendEnabled();
+    const params = new URLSearchParams();
+    params.set("format", filters.format || "json");
+    if (filters.issueType) params.set("issueType", filters.issueType);
+    return await request<any>(`/admin/payments/reconciliation/export?${params.toString()}`);
+  },
+
+  async resolvePaymentReconciliation(payload: {
+    issueType: string;
+    bookingId?: string;
+    txId?: string;
+    dryRun?: boolean;
+  }) {
+    ensureBackendEnabled();
+    return await request<any>("/admin/payments/reconciliation/resolve", {
+      method: "POST",
+      body: payload,
+    });
+  },
+
+  async resolvePaymentReconciliationBulk(
+    items: Array<{ issueType: string; bookingId?: string; txId?: string; dryRun?: boolean }>,
+    dryRun = true,
+  ) {
+    ensureBackendEnabled();
+    const payload = await requestEnvelope<any[]>("/admin/payments/reconciliation/resolve/bulk", {
+      method: "POST",
+      body: {
+        items,
+        dryRun,
+      },
+    });
+    const meta = payload.meta || {};
+    return {
+      items: Array.isArray(payload.data) ? payload.data : [],
+      summary: {
+        total: Number(meta?.total || items.length),
+        successCount: Number(meta?.successCount || 0),
+        failureCount: Number(meta?.failureCount || 0),
+        dryRunDefault: Boolean(meta?.dryRunDefault),
+      },
+    };
+  },
+
+  async resolvePaymentReconciliationByFilter(payload: {
+    issueType: string;
+    maxItems?: number;
+    dryRun?: boolean;
+  }) {
+    ensureBackendEnabled();
+    const response = await requestEnvelope<any[]>("/admin/payments/reconciliation/resolve/by-filter", {
+      method: "POST",
+      body: payload,
+    });
+    const meta = response.meta || {};
+    return {
+      items: Array.isArray(response.data) ? response.data : [],
+      summary: {
+        issueType: String(meta?.issueType || payload.issueType || ""),
+        requestedMaxItems: Number(meta?.requestedMaxItems || payload.maxItems || 0),
+        matched: Number(meta?.matched || 0),
+        total: Number(meta?.processed || 0),
+        processed: Number(meta?.processed || 0),
+        successCount: Number(meta?.successCount || 0),
+        failureCount: Number(meta?.failureCount || 0),
+        dryRun: Boolean(meta?.dryRun),
+      },
+    };
+  },
+
+  async getBookingHistory(filters: {
+    view?: "active" | "past" | "all";
+    dateFrom?: string;
+    dateTo?: string;
+    includeNoShow?: boolean;
+    includeCancelled?: boolean;
+    page?: number;
+    limit?: number;
+  } = {}) {
+    ensureBackendEnabled();
+    const params = new URLSearchParams();
+    if (filters.view) params.set("view", filters.view);
+    if (filters.dateFrom) params.set("dateFrom", filters.dateFrom);
+    if (filters.dateTo) params.set("dateTo", filters.dateTo);
+    if (filters.includeNoShow != null) params.set("includeNoShow", String(filters.includeNoShow));
+    if (filters.includeCancelled != null) params.set("includeCancelled", String(filters.includeCancelled));
+    if (filters.page != null) params.set("page", String(filters.page));
+    if (filters.limit != null) params.set("limit", String(filters.limit));
+    const query = params.toString();
+    const data = await request<any[]>(`/bookings/history${query ? `?${query}` : ""}`);
+    return Array.isArray(data) ? data.map(mapBooking) : [];
+  },
+
+  async getBookingTimeline(id: string, order: "asc" | "desc" = "desc") {
+    ensureBackendEnabled();
+    return await request<any>(`/bookings/${encodeURIComponent(id)}/timeline?order=${encodeURIComponent(order)}`);
+  },
+
+  async transitionBookingStatus(
+    id: string,
+    payload: {
+      status: "pending" | "confirmed" | "cancelled" | "completed" | "no_show";
+      reason?: string;
+      expectedUpdatedAt?: string;
+    },
+  ) {
+    ensureBackendEnabled();
+    const data = await request<any>(`/bookings/${encodeURIComponent(id)}/status`, {
+      method: "PATCH",
+      body: payload,
+    });
+    return mapBooking(data);
+  },
+
+  async setBookingPaymentDeadline(
+    id: string,
+    payload:
+      | { clear: true; referenceNow?: string }
+      | { ttlMinutes: number; referenceNow?: string }
+      | { dueAt: string; referenceNow?: string },
+  ) {
+    ensureBackendEnabled();
+    const data = await request<any>(`/bookings/${encodeURIComponent(id)}/payment-deadline`, {
+      method: "POST",
+      body: payload,
+    });
+    return mapBooking(data);
+  },
+
+  async createBookingHold(payload: {
+    courtId: string;
+    date: string;
+    startTime: string;
+    endTime: string;
+    ttlMinutes?: number;
+  }) {
+    ensureBackendEnabled();
+    return await request<any>("/bookings/holds", {
+      method: "POST",
+      body: payload,
+    });
+  },
+
+  async getMyBookingHolds(filters: { courtId?: string; date?: string } = {}) {
+    ensureBackendEnabled();
+    const params = new URLSearchParams();
+    if (filters.courtId) params.set("courtId", filters.courtId);
+    if (filters.date) params.set("date", filters.date);
+    const query = params.toString();
+    return await request<any[]>(`/bookings/holds/me${query ? `?${query}` : ""}`);
+  },
+
+  async releaseBookingHold(id: string) {
+    ensureBackendEnabled();
+    return await request<any>(`/bookings/holds/${encodeURIComponent(id)}`, {
+      method: "DELETE",
+    });
+  },
+
+  async leaveSession(bookingId: string) {
+    ensureBackendEnabled();
+    const data = await request<any>(`/sessions/${encodeURIComponent(bookingId)}/leave`, {
+      method: "POST",
+      body: {},
+    });
+    return mapBooking(data);
+  },
+
+  async cancelSubscription(subscriptionId: string) {
+    ensureBackendEnabled();
+    return await request<any>(`/subscriptions/${encodeURIComponent(subscriptionId)}/cancel`, {
+      method: "POST",
+      body: {},
+    });
+  },
+
+  async getUnreadNotificationsCount() {
+    ensureBackendEnabled();
+    const data = await request<{ unread?: number }>("/notifications/unread-count");
+    return Number(data?.unread || 0);
+  },
+
+  async markNotificationAsRead(notificationId: string) {
+    ensureBackendEnabled();
+    return await request<any>(`/notifications/${encodeURIComponent(notificationId)}/read`, {
+      method: "POST",
+      body: {},
+    });
+  },
+
+  async exportAttendanceAnalytics(filters: {
+    format?: "json" | "csv";
+    startDate?: Date;
+    endDate?: Date;
+    coachId?: string;
+    courtId?: string;
+    sport?: string;
+  } = {}) {
+    ensureBackendEnabled();
+    const params = new URLSearchParams();
+    params.set("format", filters.format || "json");
+    if (filters.startDate) params.set("startDate", filters.startDate.toISOString().slice(0, 10));
+    if (filters.endDate) params.set("endDate", filters.endDate.toISOString().slice(0, 10));
+    if (filters.coachId) params.set("coachId", filters.coachId);
+    if (filters.courtId) params.set("courtId", filters.courtId);
+    if (filters.sport) params.set("sport", filters.sport);
+    return await request<any>(`/analytics/attendance/export?${params.toString()}`);
   },
 };

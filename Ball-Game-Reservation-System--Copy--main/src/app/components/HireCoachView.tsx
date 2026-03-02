@@ -1,9 +1,23 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { useApp } from '@/context/AppContext';
+import { backendApi } from '@/context/backendApi';
 import { format } from 'date-fns';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { ArrowLeft, BadgeCheck, Calendar, Clock, MapPin, Star, UserRound, Users } from 'lucide-react';
 import { toast } from 'sonner';
+
+type CoachApplicationRecord = {
+  id: string;
+  coachId: string;
+  playerId: string;
+  sport: string;
+  status: 'pending' | 'approved' | 'rejected';
+  message?: string;
+  preferredSchedule?: string;
+  createdAt: string;
+  updatedAt: string;
+  reviewNote?: string;
+};
 
 function addMinutesToTime(time: string, minutesToAdd: number): string {
   const [h, m] = time.split(':').map(Number);
@@ -22,6 +36,7 @@ export function HireCoachView() {
   const [notes, setNotes] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [availableSlots, setAvailableSlots] = useState<string[]>([]);
+  const [myCoachApplications, setMyCoachApplications] = useState<CoachApplicationRecord[]>([]);
   const navigate = useNavigate();
   const location = useLocation();
 
@@ -99,6 +114,41 @@ export function HireCoachView() {
     };
   }, [getAvailableSlots, selectedCourtId, selectedDate]);
 
+  useEffect(() => {
+    let active = true;
+    if (!backendApi.isEnabled || !currentUser) {
+      setMyCoachApplications([]);
+      return;
+    }
+
+    backendApi
+      .getMyCoachApplications()
+      .then((rows) => {
+        if (!active) return;
+        const mapped = rows.map((item: any) => ({
+          id: String(item?.id || ''),
+          coachId: String(item?.coachId || ''),
+          playerId: String(item?.playerId || ''),
+          sport: String(item?.sport || 'training'),
+          status: (String(item?.status || 'pending') as CoachApplicationRecord['status']),
+          message: item?.message ? String(item.message) : undefined,
+          preferredSchedule: item?.preferredSchedule ? String(item.preferredSchedule) : undefined,
+          createdAt: String(item?.createdAt || new Date().toISOString()),
+          updatedAt: String(item?.updatedAt || new Date().toISOString()),
+          reviewNote: item?.reviewNote ? String(item.reviewNote) : undefined,
+        }));
+        setMyCoachApplications(mapped.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()).slice(0, 5));
+      })
+      .catch(() => {
+        if (!active) return;
+        setMyCoachApplications([]);
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [currentUser]);
+
   const myCoachReservations = useMemo(
     () =>
       bookings
@@ -107,6 +157,35 @@ export function HireCoachView() {
         .slice(0, 5),
     [bookings, currentUser]
   );
+
+  const recentItems = useMemo(() => {
+    if (backendApi.isEnabled) {
+      return myCoachApplications.map((app) => {
+        const coach = users.find((u) => u.id === app.coachId);
+        return {
+          id: app.id,
+          title: coach?.name || 'Coach',
+          line1: app.sport,
+          line2: app.preferredSchedule || format(new Date(app.createdAt), 'MMM dd, yyyy'),
+          line3: app.message || '',
+          status: app.status,
+        };
+      });
+    }
+
+    return myCoachReservations.map((booking) => {
+      const court = courts.find((c) => c.id === booking.courtId);
+      const coach = users.find((u) => u.id === booking.coachId);
+      return {
+        id: booking.id,
+        title: coach?.name || 'Coach',
+        line1: court?.name || 'Court',
+        line2: `${format(new Date(booking.date), 'MMM dd, yyyy')} ${booking.startTime}-${booking.endTime}`,
+        line3: '',
+        status: booking.status,
+      };
+    });
+  }, [courts, myCoachApplications, myCoachReservations, users]);
 
   const handleReserveCoach = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -130,23 +209,39 @@ export function HireCoachView() {
       const bookingDate = new Date(`${selectedDate}T00:00:00`);
       const amount = selectedCourt ? Number(selectedCourt.hourlyRate) * (duration / 60) : 0;
 
-      await createBooking({
-        courtId: selectedCourtId,
-        userId: currentUser.id,
-        type: 'training',
-        date: bookingDate,
-        startTime: selectedTime,
-        endTime,
-        duration,
-        status: 'pending',
-        paymentStatus: 'unpaid',
-        amount,
-        players: [currentUser.id],
-        coachId: selectedCoach.id,
-        maxPlayers: 1,
-        notes: notes || `Coach request: ${selectedCoach?.name || 'Coach'}`,
-        checkedIn: false,
-      });
+      if (backendApi.isEnabled) {
+        const sport = (selectedCourt?.name || '').toLowerCase().includes('basket')
+          ? 'basketball'
+          : (selectedCourt?.name || '').toLowerCase().includes('tennis')
+            ? 'tennis'
+            : (selectedCourt?.name || '').toLowerCase().includes('pickle')
+              ? 'pickleball'
+              : 'training';
+        await backendApi.createCoachApplication({
+          coachId: selectedCoach.id,
+          sport,
+          message: notes || `Coach request: ${selectedCoach?.name || 'Coach'}`,
+          preferredSchedule: `${selectedDate} ${selectedTime}-${endTime} @ ${selectedCourt?.name || 'Court'}`,
+        });
+      } else {
+        await createBooking({
+          courtId: selectedCourtId,
+          userId: currentUser.id,
+          type: 'training',
+          date: bookingDate,
+          startTime: selectedTime,
+          endTime,
+          duration,
+          status: 'pending',
+          paymentStatus: 'unpaid',
+          amount,
+          players: [currentUser.id],
+          coachId: selectedCoach.id,
+          maxPlayers: 1,
+          notes: notes || `Coach request: ${selectedCoach?.name || 'Coach'}`,
+          checkedIn: false,
+        });
+      }
 
       toast.success('Coach reservation submitted.');
       setNotes('');
@@ -415,28 +510,28 @@ export function HireCoachView() {
       </section>
 
       <section className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 p-5 shadow-sm">
-        <h3 className="text-base font-semibold text-slate-900 dark:text-slate-100 mb-3">Recent Coach Reservations</h3>
+        <h3 className="text-base font-semibold text-slate-900 dark:text-slate-100 mb-3">
+          {backendApi.isEnabled ? 'Recent Coach Applications' : 'Recent Coach Reservations'}
+        </h3>
         <div className="space-y-3">
-          {myCoachReservations.length === 0 && (
-            <p className="text-sm text-slate-500 dark:text-slate-400">No coach reservations yet.</p>
+          {recentItems.length === 0 && (
+            <p className="text-sm text-slate-500 dark:text-slate-400">
+              {backendApi.isEnabled ? 'No coach applications yet.' : 'No coach reservations yet.'}
+            </p>
           )}
-          {myCoachReservations.map((booking) => {
-            const court = courts.find((c) => c.id === booking.courtId);
-            const coach = users.find((u) => u.id === booking.coachId);
+          {recentItems.map((item) => {
             return (
-              <div key={booking.id} className="rounded-lg border border-slate-200 dark:border-slate-700 p-3 bg-white dark:bg-slate-900">
-                <p className="text-sm font-semibold text-slate-900 dark:text-slate-100">{coach?.name || 'Coach'}</p>
+              <div key={item.id} className="rounded-lg border border-slate-200 dark:border-slate-700 p-3 bg-white dark:bg-slate-900">
+                <p className="text-sm font-semibold text-slate-900 dark:text-slate-100">{item.title}</p>
                 <p className="text-xs text-slate-600 dark:text-slate-400 inline-flex items-center gap-1">
-                  <MapPin size={12} /> {court?.name || 'Court'}
+                  <MapPin size={12} /> {item.line1}
                 </p>
                 <p className="text-xs text-slate-600 dark:text-slate-400 inline-flex items-center gap-1 ml-2">
-                  <Calendar size={12} /> {format(new Date(booking.date), 'MMM dd, yyyy')}
+                  <Calendar size={12} /> {item.line2}
                 </p>
-                <p className="text-xs text-slate-600 dark:text-slate-400 inline-flex items-center gap-1 ml-2">
-                  <Clock size={12} /> {booking.startTime}-{booking.endTime}
-                </p>
+                {item.line3 && <p className="text-xs text-slate-600 dark:text-slate-400 mt-1">{item.line3}</p>}
                 <p className="text-xs mt-2 inline-flex items-center gap-1 px-2 py-1 rounded-full bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300">
-                  <Users size={12} /> {booking.status}
+                  <Users size={12} /> {item.status}
                 </p>
               </div>
             );

@@ -1,9 +1,10 @@
-import { useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useApp } from '@/context/AppContext';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { ArrowLeft, Calendar, MapPin, Clock3, X, CheckCircle } from 'lucide-react';
 import { format } from 'date-fns';
 import { toast } from 'sonner';
+import { backendApi } from '@/context/backendApi';
 
 const COURT_META: Record<string, { location: string; sport: string }> = {
   c1: { location: 'Downtown Sports Complex', sport: 'Basketball' },
@@ -12,15 +13,22 @@ const COURT_META: Record<string, { location: string; sport: string }> = {
 };
 
 export function BookingHistoryView() {
-  const { currentUser, bookings, courts, cancelBooking } = useApp();
+  const { currentUser, bookings, courts, cancelBooking, leaveSession } = useApp();
   const location = useLocation();
   const navigate = useNavigate();
   const [activeTab, setActiveTab] = useState<'upcoming' | 'past'>('past');
+  const usingBackendApi = backendApi.isEnabled;
+  const [backendUpcomingBookings, setBackendUpcomingBookings] = useState<typeof bookings>([]);
+  const [backendPastBookings, setBackendPastBookings] = useState<typeof bookings>([]);
+  const [isBackendHistoryLoading, setIsBackendHistoryLoading] = useState(false);
+  const [selectedTimelineBookingId, setSelectedTimelineBookingId] = useState<string | null>(null);
+  const [timelineEvents, setTimelineEvents] = useState<any[]>([]);
+  const [isTimelineLoading, setIsTimelineLoading] = useState(false);
 
   const allUserBookings = useMemo(
     () =>
       bookings
-        .filter((b) => b.userId === currentUser?.id)
+        .filter((b) => b.userId === currentUser?.id || (b.players || []).includes(currentUser?.id || ''))
         .sort((a, b) => b.date.getTime() - a.date.getTime()),
     [bookings, currentUser]
   );
@@ -48,12 +56,95 @@ export function BookingHistoryView() {
 
   const upcomingCount = upcomingBookings.length;
   const pastCount = pastBookings.length;
-  const displayedBookings = activeTab === 'upcoming' ? upcomingBookings : pastBookings;
 
-  const handleCancel = (bookingId: string) => {
+  const loadBackendHistory = useCallback(async () => {
+    if (!usingBackendApi || !currentUser) return;
+    setIsBackendHistoryLoading(true);
+    try {
+      const [activeRows, pastRows] = await Promise.all([
+        backendApi.getBookingHistory({ view: 'active', page: 1, limit: 200 }),
+        backendApi.getBookingHistory({
+          view: 'past',
+          includeNoShow: true,
+          includeCancelled: true,
+          page: 1,
+          limit: 200,
+        }),
+      ]);
+      setBackendUpcomingBookings(activeRows);
+      setBackendPastBookings(pastRows);
+    } catch (error) {
+      console.error('Failed to load backend booking history:', error);
+      toast.error('Failed to load booking history from backend.');
+    } finally {
+      setIsBackendHistoryLoading(false);
+    }
+  }, [usingBackendApi, currentUser]);
+
+  useEffect(() => {
+    if (!usingBackendApi || !currentUser) return;
+    void loadBackendHistory();
+  }, [usingBackendApi, currentUser, loadBackendHistory]);
+
+  const sourceUpcoming = usingBackendApi ? backendUpcomingBookings : upcomingBookings;
+  const sourcePast = usingBackendApi ? backendPastBookings : pastBookings;
+  const displayedBookings = activeTab === 'upcoming' ? sourceUpcoming : sourcePast;
+  const totalRecords = sourceUpcoming.length + sourcePast.length;
+
+  const handleCancel = async (bookingId: string) => {
     if (confirm('Are you sure you want to cancel this booking?')) {
-      cancelBooking(bookingId);
+      await cancelBooking(bookingId);
+      if (usingBackendApi) {
+        await loadBackendHistory();
+      }
       toast.success('Booking cancelled successfully');
+    }
+  };
+
+  const handleLeaveSession = async (bookingId: string) => {
+    if (!confirm('Leave this session?')) return;
+    try {
+      await leaveSession(bookingId);
+      if (usingBackendApi) {
+        await loadBackendHistory();
+      }
+      toast.success('You left the session.');
+    } catch (error: any) {
+      toast.error(error?.message || 'Failed to leave session.');
+    }
+  };
+
+  const openTimeline = async (bookingId: string) => {
+    const booking = displayedBookings.find((row) => row.id === bookingId);
+    if (!booking) return;
+    setSelectedTimelineBookingId(bookingId);
+    setIsTimelineLoading(true);
+    try {
+      if (usingBackendApi) {
+        const payload = await backendApi.getBookingTimeline(bookingId, 'desc');
+        setTimelineEvents(Array.isArray(payload?.events) ? payload.events : []);
+      } else {
+        setTimelineEvents([
+          {
+            id: `local-created-${booking.id}`,
+            action: 'booking_created',
+            label: 'Booking Created',
+            createdAt: booking.createdAt.toISOString(),
+            details: {
+              status: booking.status,
+              date: format(booking.date, 'yyyy-MM-dd'),
+              startTime: booking.startTime,
+              endTime: booking.endTime,
+            },
+          },
+        ]);
+      }
+    } catch (error) {
+      console.error('Failed to load booking timeline:', error);
+      toast.error('Failed to load booking timeline.');
+      setSelectedTimelineBookingId(null);
+    } finally {
+      setIsTimelineLoading(false);
     }
   };
 
@@ -81,7 +172,7 @@ export function BookingHistoryView() {
           </button>
           <div>
             <h1 className="text-2xl font-bold text-slate-900 dark:text-slate-100">History</h1>
-            <p className="text-slate-600 dark:text-slate-400 text-sm">{allUserBookings.length} total records</p>
+            <p className="text-slate-600 dark:text-slate-400 text-sm">{totalRecords} total records</p>
           </div>
         </header>
 
@@ -100,7 +191,7 @@ export function BookingHistoryView() {
                   activeTab === 'upcoming' ? 'bg-white dark:bg-slate-700 text-slate-900 dark:text-slate-100' : 'text-slate-700 dark:text-slate-300 hover:bg-white/70 dark:hover:bg-slate-700'
                 }`}
               >
-                Upcoming ({upcomingCount})
+                Upcoming ({sourceUpcoming.length})
               </button>
               <button
                 type="button"
@@ -109,11 +200,16 @@ export function BookingHistoryView() {
                   activeTab === 'past' ? 'bg-white dark:bg-slate-700 text-slate-900 dark:text-slate-100' : 'text-slate-700 dark:text-slate-300 hover:bg-white/70 dark:hover:bg-slate-700'
                 }`}
               >
-                Past ({pastCount})
+                Past ({sourcePast.length})
               </button>
             </div>
 
             <div className="space-y-3 max-h-[620px] overflow-y-auto pr-1">
+              {usingBackendApi && isBackendHistoryLoading && (
+                <div className="rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 p-6 text-center text-slate-500 dark:text-slate-400">
+                  Syncing booking history from backend...
+                </div>
+              )}
               {displayedBookings.length === 0 && (
                 <div className="rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 p-6 text-center text-slate-500 dark:text-slate-400">
                   {activeTab === 'upcoming' ? 'No upcoming records.' : 'No past records yet.'}
@@ -124,6 +220,8 @@ export function BookingHistoryView() {
                 const court = courts.find((c) => c.id === booking.courtId);
                 const meta = COURT_META[booking.courtId] || { location: court?.name || 'Court Location', sport: 'General' };
                 const isUpcoming = booking.date >= new Date() && booking.status !== 'cancelled';
+                const isJoinedSession =
+                  booking.userId !== currentUser?.id && (booking.players || []).includes(currentUser?.id || '');
                 const ratePerHour = court?.hourlyRate || 0;
 
                 return (
@@ -133,7 +231,7 @@ export function BookingHistoryView() {
                         <h3 className="text-xl font-bold text-slate-900 dark:text-slate-100">{court?.name || 'Unknown Court'}</h3>
                         <div className="flex items-center gap-2 mt-1">
                           <span className="inline-flex items-center px-3 py-1 rounded-full bg-slate-900 dark:bg-slate-700 text-white text-xs font-semibold">
-                            {isUpcoming ? 'Upcoming' : 'Past'}
+                            {isUpcoming ? (isJoinedSession ? 'Joined Session' : 'Upcoming') : 'Past'}
                           </span>
                           <span className={`inline-flex items-center px-2.5 py-1 rounded-full text-[11px] font-bold uppercase ${getStatusColor(booking.status)}`}>
                             {booking.status.replace('_', ' ')}
@@ -166,12 +264,28 @@ export function BookingHistoryView() {
                       {booking.status === 'confirmed' && booking.date >= new Date() && (
                         <div className="flex gap-2">
                           <button
-                            onClick={() => handleCancel(booking.id)}
-                            className="px-3 py-2 bg-rose-100 text-rose-700 rounded-lg hover:bg-rose-200 transition-colors text-sm font-semibold inline-flex items-center gap-1"
+                            onClick={() => void openTimeline(booking.id)}
+                            className="px-3 py-2 bg-slate-100 text-slate-700 rounded-lg hover:bg-slate-200 transition-colors text-sm font-semibold inline-flex items-center gap-1"
                           >
-                            <X className="w-4 h-4" />
-                            Cancel
+                            Timeline
                           </button>
+                          {isJoinedSession ? (
+                            <button
+                              onClick={() => void handleLeaveSession(booking.id)}
+                              className="px-3 py-2 bg-rose-100 text-rose-700 rounded-lg hover:bg-rose-200 transition-colors text-sm font-semibold inline-flex items-center gap-1"
+                            >
+                              <X className="w-4 h-4" />
+                              Leave Session
+                            </button>
+                          ) : (
+                            <button
+                              onClick={() => void handleCancel(booking.id)}
+                              className="px-3 py-2 bg-rose-100 text-rose-700 rounded-lg hover:bg-rose-200 transition-colors text-sm font-semibold inline-flex items-center gap-1"
+                            >
+                              <X className="w-4 h-4" />
+                              Cancel
+                            </button>
+                          )}
                           {!booking.checkedIn && (
                             <button
                               onClick={() => navigate('/check-in', { state: { from: `${location.pathname}${location.search}` } })}
@@ -183,6 +297,14 @@ export function BookingHistoryView() {
                           )}
                         </div>
                       )}
+                      {!(booking.status === 'confirmed' && booking.date >= new Date()) && (
+                        <button
+                          onClick={() => void openTimeline(booking.id)}
+                          className="px-3 py-2 bg-slate-100 text-slate-700 rounded-lg hover:bg-slate-200 transition-colors text-sm font-semibold inline-flex items-center gap-1"
+                        >
+                          Timeline
+                        </button>
+                      )}
                     </div>
                   </article>
                 );
@@ -190,6 +312,53 @@ export function BookingHistoryView() {
             </div>
           </div>
         </section>
+
+        {selectedTimelineBookingId && (
+          <div className="fixed inset-0 z-50 bg-black/45 backdrop-blur-sm flex items-center justify-center p-4">
+            <div className="w-full max-w-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-xl">
+              <div className="px-5 py-4 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between">
+                <h3 className="text-lg font-bold text-slate-900 dark:text-slate-100">Booking Timeline</h3>
+                <button
+                  onClick={() => setSelectedTimelineBookingId(null)}
+                  className="p-2 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-600 dark:text-slate-300"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+
+              <div className="p-5 max-h-[65vh] overflow-y-auto">
+                {isTimelineLoading && (
+                  <p className="text-sm text-slate-500 dark:text-slate-400">Loading timeline...</p>
+                )}
+                {!isTimelineLoading && timelineEvents.length === 0 && (
+                  <p className="text-sm text-slate-500 dark:text-slate-400">No timeline events found.</p>
+                )}
+                {!isTimelineLoading && timelineEvents.length > 0 && (
+                  <div className="space-y-3">
+                    {timelineEvents.map((event) => (
+                      <div
+                        key={String(event?.id || Math.random())}
+                        className="rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 p-3"
+                      >
+                        <div className="flex items-center justify-between gap-3">
+                          <p className="font-semibold text-slate-900 dark:text-slate-100">
+                            {String(event?.label || event?.action || 'Timeline Event')}
+                          </p>
+                          <p className="text-xs text-slate-500 dark:text-slate-400">
+                            {event?.createdAt ? format(new Date(event.createdAt), 'MMM dd, yyyy HH:mm') : '-'}
+                          </p>
+                        </div>
+                        {event?.actorName && (
+                          <p className="text-xs mt-1 text-slate-600 dark:text-slate-300">By: {String(event.actorName)}</p>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );

@@ -37,6 +37,7 @@ export function Reports() {
   const [isBackendUtilizationLoading, setIsBackendUtilizationLoading] = useState(false);
   const [backendAnalyticsError, setBackendAnalyticsError] = useState<string | null>(null);
   const [isExportingCsv, setIsExportingCsv] = useState(false);
+  const [isExportingAttendanceCsv, setIsExportingAttendanceCsv] = useState(false);
 
   const analytics = useMemo(() => {
     if (!startDate || !endDate) return null;
@@ -293,6 +294,68 @@ export function Reports() {
     document.body.removeChild(link);
   };
 
+  const handleExportAttendanceCSV = async () => {
+    if (usingBackendApi && startDate && endDate) {
+      try {
+        setIsExportingAttendanceCsv(true);
+        const payload = await backendApi.exportAttendanceAnalytics({
+          format: 'csv',
+          startDate,
+          endDate,
+          courtId: selectedCourtId === 'all' ? undefined : selectedCourtId,
+        });
+        const csv = String(payload?.data || '');
+        const filename = String(payload?.filename || `attendance_export_${format(new Date(), 'yyyy-MM-dd')}.csv`);
+        const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.setAttribute('href', url);
+        link.setAttribute('download', filename);
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        return;
+      } catch {
+        // Fall back to local export below.
+      } finally {
+        setIsExportingAttendanceCsv(false);
+      }
+    }
+
+    if (!startDate || !endDate) return;
+    const rows: Array<[string, string, string, string, string, string, string, string, string]> = [];
+    bookings
+      .filter((b) => b.type === 'training')
+      .filter((b) => new Date(b.date) >= startDate && new Date(b.date) <= endDate)
+      .filter((b) => selectedCourtId === 'all' || b.courtId === selectedCourtId)
+      .forEach((session) => {
+        (session.players || []).forEach((playerId) => {
+          rows.push([
+            session.id,
+            format(new Date(session.date), 'yyyy-MM-dd'),
+            session.courtId,
+            session.userId,
+            playerId,
+            '',
+            session.playerAttendance?.[playerId] ? 'yes' : 'no',
+            session.startTime,
+            session.endTime,
+          ]);
+        });
+      });
+
+    const headers = ['sessionId', 'date', 'courtId', 'coachId', 'playerId', 'sport', 'attended', 'startTime', 'endTime'];
+    const csvContent = [headers.join(','), ...rows.map((row) => row.join(','))].join('\n');
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.setAttribute('href', url);
+    link.setAttribute('download', `attendance_export_${format(new Date(), 'yyyy-MM-dd')}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
   if (currentUser?.role !== 'admin') {
     return (
       <div className="min-h-screen flex items-center justify-center bg-gray-50 dark:bg-slate-950">
@@ -492,13 +555,22 @@ export function Reports() {
           <div className="bg-white dark:bg-slate-900 p-6 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm">
              <div className="flex items-center justify-between mb-6">
                 <h3 className="text-lg font-bold text-slate-900 dark:text-white">Recent Transactions</h3>
-                <button 
-                    onClick={handleExportCSV}
-                    disabled={isExportingCsv}
-                    className="text-sm text-teal-600 font-medium hover:text-teal-700 flex items-center gap-1"
-                >
-                    <Download size={16} /> {isExportingCsv ? 'Exporting...' : 'Export CSV'}
-                </button>
+                <div className="flex items-center gap-3">
+                  <button
+                    onClick={handleExportAttendanceCSV}
+                    disabled={isExportingAttendanceCsv}
+                    className="text-sm text-blue-600 font-medium hover:text-blue-700 flex items-center gap-1"
+                  >
+                    <Download size={16} /> {isExportingAttendanceCsv ? 'Exporting...' : 'Export Attendance'}
+                  </button>
+                  <button 
+                      onClick={handleExportCSV}
+                      disabled={isExportingCsv}
+                      className="text-sm text-teal-600 font-medium hover:text-teal-700 flex items-center gap-1"
+                  >
+                      <Download size={16} /> {isExportingCsv ? 'Exporting...' : 'Export CSV'}
+                  </button>
+                </div>
              </div>
              <div className="overflow-x-auto">
                 <table className="w-full text-left">

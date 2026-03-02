@@ -10,7 +10,7 @@ export interface User {
   skillLevel?: 'beginner' | 'intermediate' | 'advanced' | 'expert';
   coachProfile?: string;
   coachExpertise?: string[];
-  coachVerificationStatus?: 'unverified' | 'pending' | 'verified';
+  coachVerificationStatus?: 'unverified' | 'pending' | 'verified' | 'rejected';
   coachVerificationMethod?: 'certification' | 'license' | 'experience' | 'other';
   coachVerificationDocumentName?: string;
   coachVerificationId?: string;
@@ -128,7 +128,15 @@ export interface BookingAnalytics {
 }
 
 // Notification Types
-export type NotificationType = 'booking_confirmation' | 'reminder' | 'cancellation' | 'admin_alert';
+export type NotificationType =
+  | 'booking_confirmation'
+  | 'reminder'
+  | 'cancellation'
+  | 'admin_alert'
+  | 'info'
+  | 'success'
+  | 'warning'
+  | 'error';
 
 export interface Notification {
   id: string;

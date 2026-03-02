@@ -3,15 +3,33 @@ import { useApp } from '@/context/AppContext';
 import { Bell, CheckCircle, AlertTriangle, Info, XCircle } from 'lucide-react';
 import { format } from 'date-fns';
 import { Notification } from '@/types';
+import { toast } from 'sonner';
 
 export function NotificationsView() {
-  const { currentUser, notifications } = useApp();
+  const { currentUser, notifications, markAllNotificationsAsRead, markNotificationAsRead, unreadNotificationCount } = useApp();
   const [viewMode, setViewMode] = useState<'recent' | 'all'>('recent');
   
   const myNotifications = notifications
     .filter((n: Notification) => n.userId === currentUser?.id)
     .sort((a: Notification, b: Notification) => b.createdAt.getTime() - a.createdAt.getTime());
   const displayedNotifications = viewMode === 'recent' ? myNotifications.slice(0, 5) : myNotifications;
+
+  const handleMarkAllRead = async () => {
+    try {
+      await markAllNotificationsAsRead();
+      toast.success('All notifications marked as read.');
+    } catch (error: any) {
+      toast.error(error?.message || 'Failed to mark notifications as read.');
+    }
+  };
+
+  const handleMarkRead = async (notificationId: string) => {
+    try {
+      await markNotificationAsRead(notificationId);
+    } catch (error: any) {
+      toast.error(error?.message || 'Failed to mark notification as read.');
+    }
+  };
 
   const getIcon = (type: string) => {
     switch (type) {
@@ -39,9 +57,19 @@ export function NotificationsView() {
           <h1 className="text-2xl font-bold text-slate-900 dark:text-white">Notifications</h1>
           <p className="text-slate-500 dark:text-slate-400">Stay updated with your latest activities.</p>
         </div>
-        <div className="bg-white dark:bg-slate-800 px-4 py-2 rounded-lg border border-slate-200 dark:border-slate-700 shadow-sm">
-          <span className="font-bold text-slate-900 dark:text-white">{myNotifications.length}</span>
-          <span className="text-slate-500 dark:text-slate-400 ml-2">Total</span>
+        <div className="flex items-center gap-2">
+          <div className="bg-white dark:bg-slate-800 px-4 py-2 rounded-lg border border-slate-200 dark:border-slate-700 shadow-sm">
+            <span className="font-bold text-slate-900 dark:text-white">{myNotifications.length}</span>
+            <span className="text-slate-500 dark:text-slate-400 ml-2">Total</span>
+          </div>
+          {unreadNotificationCount > 0 && (
+            <button
+              onClick={() => void handleMarkAllRead()}
+              className="px-3 py-2 rounded-lg border border-teal-200 bg-teal-50 text-teal-700 text-sm font-semibold hover:bg-teal-100 transition-colors"
+            >
+              Mark all read
+            </button>
+          )}
         </div>
       </div>
 
@@ -91,9 +119,19 @@ export function NotificationsView() {
               <div className="flex-1 min-w-0">
                 <div className="flex justify-between items-start gap-4">
                   <h3 className="font-bold text-lg">{notification.title}</h3>
-                  <span className="text-xs font-medium opacity-70 whitespace-nowrap">
-                    {format(notification.createdAt, 'MMM dd, HH:mm')}
-                  </span>
+                  <div className="flex items-center gap-2">
+                    {!notification.read && (
+                      <button
+                        onClick={() => void handleMarkRead(notification.id)}
+                        className="text-xs font-semibold px-2 py-1 rounded-md bg-white/70 hover:bg-white text-slate-700 transition-colors"
+                      >
+                        Mark read
+                      </button>
+                    )}
+                    <span className="text-xs font-medium opacity-70 whitespace-nowrap">
+                      {format(notification.createdAt, 'MMM dd, HH:mm')}
+                    </span>
+                  </div>
                 </div>
                 <p className="mt-1 opacity-90 leading-relaxed">{notification.message}</p>
               </div>

@@ -80,6 +80,15 @@ export function AdminPanel() {
     setShowDeleteConfirm(true);
   };
 
+  const handleConfigChange = async (updates: Parameters<typeof updateConfig>[0]) => {
+    try {
+      await updateConfig(updates);
+    } catch (error) {
+      console.error('Failed to update facility config:', error);
+      toast.error('Failed to save configuration changes');
+    }
+  };
+
   const confirmDelete = () => {
     if (courtToDelete) {
       deleteCourt(courtToDelete);
@@ -513,7 +522,7 @@ export function AdminPanel() {
                 <input
                   type="time"
                   value={config.openingTime}
-                  onChange={(e) => updateConfig({ openingTime: e.target.value })}
+                  onChange={(e) => void handleConfigChange({ openingTime: e.target.value })}
                   className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-teal-500"
                 />
               </div>
@@ -522,7 +531,7 @@ export function AdminPanel() {
                 <input
                   type="time"
                   value={config.closingTime}
-                  onChange={(e) => updateConfig({ closingTime: e.target.value })}
+                  onChange={(e) => void handleConfigChange({ closingTime: e.target.value })}
                   className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-teal-500"
                 />
               </div>
@@ -530,7 +539,7 @@ export function AdminPanel() {
                 <label className="block text-sm mb-2">Booking Interval (minutes)</label>
                 <select
                   value={config.bookingInterval}
-                  onChange={(e) => updateConfig({ bookingInterval: Number(e.target.value) })}
+                  onChange={(e) => void handleConfigChange({ bookingInterval: Number(e.target.value) })}
                   className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-teal-500"
                 >
                   <option value={30}>30 minutes</option>
@@ -542,7 +551,7 @@ export function AdminPanel() {
                 <input
                   type="number"
                   value={config.bufferTime}
-                  onChange={(e) => updateConfig({ bufferTime: Number(e.target.value) })}
+                  onChange={(e) => void handleConfigChange({ bufferTime: Number(e.target.value) })}
                   className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-teal-500"
                   min="0"
                   step="5"
@@ -553,7 +562,7 @@ export function AdminPanel() {
                 <input
                   type="number"
                   value={config.maxBookingDuration}
-                  onChange={(e) => updateConfig({ maxBookingDuration: Number(e.target.value) })}
+                  onChange={(e) => void handleConfigChange({ maxBookingDuration: Number(e.target.value) })}
                   className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-teal-500"
                   min="30"
                   step="30"
@@ -564,7 +573,7 @@ export function AdminPanel() {
                 <input
                   type="number"
                   value={config.advanceBookingDays}
-                  onChange={(e) => updateConfig({ advanceBookingDays: Number(e.target.value) })}
+                  onChange={(e) => void handleConfigChange({ advanceBookingDays: Number(e.target.value) })}
                   className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-teal-500"
                   min="1"
                   max="30"
@@ -575,7 +584,7 @@ export function AdminPanel() {
                 <input
                   type="number"
                   value={config.cancellationCutoffHours}
-                  onChange={(e) => updateConfig({ cancellationCutoffHours: Number(e.target.value) })}
+                  onChange={(e) => void handleConfigChange({ cancellationCutoffHours: Number(e.target.value) })}
                   className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-teal-500"
                   min="0"
                 />

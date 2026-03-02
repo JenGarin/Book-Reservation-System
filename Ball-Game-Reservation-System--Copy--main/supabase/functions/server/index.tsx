@@ -178,6 +178,16 @@ type ApiRateLimitRecord = {
   resetAt: string;
 };
 
+type ApiOAuthState = {
+  token: string;
+  provider: OAuthProvider;
+  expectedRole: Role;
+  email: string;
+  createdAt: string;
+  expiresAt: string;
+  redirectUri?: string;
+};
+
 const isRole = (value: string): value is Role => ROLE_VALUES.includes(value as Role);
 const isValidEmail = (email: string) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
 const isOAuthProvider = (value: string): value is OAuthProvider =>
@@ -314,6 +324,97 @@ const paymentWebhookSecret = () => {
     return "";
   }
 };
+const oauthStateTtlSeconds = () => {
+  const fallback = 300;
+  try {
+    const raw = Number(Deno.env.get("AUTH_OAUTH_STATE_TTL_SECONDS") || fallback);
+    if (!Number.isFinite(raw)) return fallback;
+    return Math.max(60, Math.min(1800, Math.floor(raw)));
+  } catch {
+    return fallback;
+  }
+};
+const oauthStateKey = (token: string) => `oauth_state:${token}`;
+const oauthRedirectAllowedOrigins = () => {
+  const origins = new Set<string>();
+  try {
+    const raw = String(Deno.env.get("AUTH_OAUTH_REDIRECT_ORIGINS") || "").trim();
+    if (raw) {
+      for (const item of raw.split(",")) {
+        const value = item.trim();
+        if (!value) continue;
+        try {
+          const parsed = new URL(value);
+          if (["http:", "https:"].includes(parsed.protocol)) origins.add(parsed.origin);
+        } catch {
+          // ignore malformed origin entries
+        }
+      }
+    }
+  } catch {
+    // no-op
+  }
+  const appBase = publicAppBaseUrl();
+  if (appBase) {
+    try {
+      const parsed = new URL(appBase);
+      if (["http:", "https:"].includes(parsed.protocol)) origins.add(parsed.origin);
+    } catch {
+      // no-op
+    }
+  }
+  return Array.from(origins);
+};
+const oauthStrictRedirectValidation = () => {
+  try {
+    const raw = String(Deno.env.get("AUTH_OAUTH_STRICT_REDIRECT") || "").trim().toLowerCase();
+    return raw === "true" || raw === "1" || raw === "yes";
+  } catch {
+    return false;
+  }
+};
+const createOAuthState = async (payload: {
+  provider: OAuthProvider;
+  expectedRole: Role;
+  email: string;
+  redirectUri?: string;
+}) => {
+  const token = id();
+  const createdAt = nowIso();
+  const expiresAt = new Date(Date.now() + oauthStateTtlSeconds() * 1000).toISOString();
+  const state: ApiOAuthState = {
+    token,
+    provider: payload.provider,
+    expectedRole: payload.expectedRole,
+    email: payload.email.trim().toLowerCase(),
+    createdAt,
+    expiresAt,
+    redirectUri: payload.redirectUri,
+  };
+  await kv.set(oauthStateKey(token), state);
+  return state;
+};
+const consumeOAuthState = async (token: string) => {
+  const key = oauthStateKey(token);
+  const existing = (await kv.get(key)) as ApiOAuthState | null;
+  if (existing) await kv.del(key);
+  return existing;
+};
+const cleanupExpiredOAuthStates = async (maxToDelete = 200) => {
+  const states = (await kv.getByPrefix("oauth_state:")) as ApiOAuthState[];
+  if (states.length === 0) return 0;
+  const now = Date.now();
+  const expired = states
+    .filter((item) => {
+      if (!item?.token) return false;
+      const expiresMs = new Date(String(item.expiresAt || "")).getTime();
+      return Number.isNaN(expiresMs) || expiresMs <= now;
+    })
+    .slice(0, Math.max(1, maxToDelete));
+  if (expired.length === 0) return 0;
+  await Promise.all(expired.map((item) => kv.del(oauthStateKey(item.token))));
+  return expired.length;
+};
 const paymentSuccessUrl = (txId: string) => {
   try {
     const fromEnv = String(Deno.env.get("PAYMENT_SUCCESS_URL") || "").trim();
@@ -342,16 +443,34 @@ const withPaymentTransactionUpdate = (
   ...patch,
   updatedAt: nowIso(),
 });
-const paymentCanBeInitiatedBy = (booking: ApiBooking, actor: ApiUser, role: Role) =>
-  bookingCanBeReadBy(booking, actor, role);
-const normalizeWebhookPaymentStatus = (raw: string) => {
+const paymentCanBeInitiatedBy = (booking: ApiBooking, actor: ApiUser, role: Role) => {
+  if (role === "admin" || role === "staff") return true;
+  if (role === "coach") return booking.userId === actor.id || booking.coachId === actor.id;
+  return booking.userId === actor.id;
+};
+const resolveNextTxStatus = (
+  current: ApiPaymentTransaction["status"],
+  incoming: ApiPaymentTransaction["status"],
+): ApiPaymentTransaction["status"] => {
+  // Keep paid transactions terminal to avoid late webhook regressions.
+  if (current === "paid" && incoming !== "paid") return "paid";
+  return incoming;
+};
+const bookingReceiptCanBeReadBy = (booking: ApiBooking, actor: ApiUser, role: Role) => {
+  if (role === "admin" || role === "staff") return true;
+  return booking.userId === actor.id;
+};
+const normalizeWebhookPaymentStatus = (
+  raw: string,
+  fallback: ApiPaymentTransaction["status"],
+): ApiPaymentTransaction["status"] => {
   const value = raw.trim().toLowerCase();
-  if (!value) return "pending" as const;
+  if (!value) return fallback;
   if (["paid", "succeeded", "success", "charge.paid", "payment.paid"].includes(value)) return "paid" as const;
   if (["failed", "charge.failed", "payment.failed", "declined"].includes(value)) return "failed" as const;
   if (["expired", "timeout"].includes(value)) return "expired" as const;
   if (["cancelled", "canceled"].includes(value)) return "cancelled" as const;
-  return "pending" as const;
+  return fallback;
 };
 
 const requestIdFromContext = (c: any) => {
@@ -493,6 +612,36 @@ const seedUsers = async (): Promise<ApiUser[]> => {
   return users;
 };
 
+const authCredentialKey = (userId: string) => `authcred:${userId}`;
+
+const defaultPasswordForRole = (role: Role) => {
+  if (role === "admin") return "admin";
+  if (role === "staff") return "staff";
+  if (role === "coach") return "coach";
+  return "player";
+};
+
+const getUserPassword = async (user: ApiUser) => {
+  const stored = (await kv.get(authCredentialKey(user.id))) as string | null;
+  if (typeof stored === "string" && stored.trim().length > 0) return stored;
+  return defaultPasswordForRole(user.role);
+};
+
+const setUserPassword = async (userId: string, password: string) => {
+  await kv.set(authCredentialKey(userId), String(password || "").trim());
+};
+
+const minimumPasswordLength = () => {
+  const fallback = 6;
+  try {
+    const raw = Number(Deno.env.get("AUTH_PASSWORD_MIN_LENGTH") || fallback);
+    if (!Number.isFinite(raw)) return fallback;
+    return Math.max(1, Math.floor(raw));
+  } catch {
+    return fallback;
+  }
+};
+
 const seedCourts = async (): Promise<ApiCourt[]> => {
   const existing = await kv.getByPrefix("court:");
   if (existing.length > 0) return existing as ApiCourt[];
@@ -616,6 +765,18 @@ const requireRole = async (c: any, allowed: Role[]) => {
   return result;
 };
 
+const internalAuthHeaders = (c: any, userId: string, role: Role): Record<string, string> => {
+  const headers: Record<string, string> = {
+    "x-user-id": userId,
+    "x-user-role": role,
+  };
+  const authorization = String(c.req.header("authorization") || "").trim();
+  if (authorization) headers.authorization = authorization;
+  const requestId = String(c.req.header("x-request-id") || "").trim();
+  if (requestId) headers["x-request-id"] = requestId;
+  return headers;
+};
+
 const toMinutes = (time: string) => {
   const [h, m] = time.split(":").map(Number);
   return h * 60 + m;
@@ -626,6 +787,15 @@ const isValidDate = (value: string) => /^\d{4}-\d{2}-\d{2}$/.test(value);
 const isValidCurrencyAmount = (value: number) =>
   Number.isFinite(value) && value >= 0 && Math.abs(value * 100 - Math.round(value * 100)) < 1e-8;
 const isValidBookingType = (value: string) => ["open_play", "private", "training"].includes(value);
+const USER_SKILL_LEVELS = ["beginner", "intermediate", "advanced", "expert"] as const;
+const isValidSkillLevel = (value: string) => USER_SKILL_LEVELS.includes(value as (typeof USER_SKILL_LEVELS)[number]);
+const PLAN_INTERVALS = ["month", "year"] as const;
+const PLAN_TIERS = ["basic", "premium", "elite"] as const;
+const SUBSCRIPTION_PAYMENT_METHODS = ["card", "maya", "gcash", "cash"] as const;
+const isValidPlanInterval = (value: string) => PLAN_INTERVALS.includes(value as (typeof PLAN_INTERVALS)[number]);
+const isValidPlanTier = (value: string) => PLAN_TIERS.includes(value as (typeof PLAN_TIERS)[number]);
+const isValidSubscriptionPaymentMethod = (value: string) =>
+  SUBSCRIPTION_PAYMENT_METHODS.includes(value as (typeof SUBSCRIPTION_PAYMENT_METHODS)[number]);
 
 const mergeDateTime = (date: string, time: string) => new Date(`${date}T${time}:00`);
 const minutesBetween = (start: string, end: string) => toMinutes(end) - toMinutes(start);
@@ -777,11 +947,12 @@ const withCoachApplicationUpdate = (
 });
 const bookingCanBeReadBy = (booking: ApiBooking, actor: ApiUser, role: Role) => {
   const isOwner = booking.userId === actor.id;
+  const isJoinedPlayer = role === "player" && (booking.players || []).includes(actor.id);
   const isCoachParticipant =
     role === "coach" &&
     (booking.userId === actor.id || booking.coachId === actor.id || (booking.players || []).includes(actor.id));
   const isPrivileged = role === "admin" || role === "staff";
-  return isOwner || isCoachParticipant || isPrivileged;
+  return isOwner || isJoinedPlayer || isCoachParticipant || isPrivileged;
 };
 const publicAppBaseUrl = () => {
   try {
@@ -992,7 +1163,12 @@ const queryAuditLogs = async (params: {
   if (params.dateTo) logs = logs.filter((log) => log.createdAt.slice(0, 10) <= params.dateTo!);
   return logs.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
 };
-const toReceiptPayload = (booking: ApiBooking, court: ApiCourt | null, player: ApiUser | null) => ({
+const toReceiptPayload = (
+  booking: ApiBooking,
+  court: ApiCourt | null,
+  player: ApiUser | null,
+  options: { publicView?: boolean } = {},
+) => ({
   bookingId: booking.id,
   bookingReference: `BK-${booking.date.replaceAll("-", "")}-${booking.id.slice(0, 6).toUpperCase()}`,
   bookingStatus: booking.status,
@@ -1020,7 +1196,11 @@ const toReceiptPayload = (booking: ApiBooking, court: ApiCourt | null, player: A
         price: court.hourlyRate,
       }
     : null,
-  player: player ? { id: player.id, name: player.name, email: player.email } : null,
+  player: player
+    ? options.publicView
+      ? { id: player.id, name: player.name }
+      : { id: player.id, name: player.name, email: player.email }
+    : null,
   qrTargetUrl: buildReceiptUrl(booking),
   receiptToken: booking.receiptToken || null,
   publicReceiptUrl: booking.receiptToken ? buildPublicReceiptUrl(booking.receiptToken) : null,
@@ -1042,7 +1222,11 @@ app.post(`${API_BASE}/auth/login`, async (c) => {
   if (loginRateErr) return loginRateErr;
   const body = await c.req.json().catch(() => ({}));
   const email = String(body?.email || "").trim().toLowerCase();
+  const password = String(body?.password || "");
   const expectedRoleRaw = String(body?.expectedRole || "").trim().toLowerCase();
+  if (!password) {
+    return jsonErr(c, 400, "VALIDATION_ERROR", "Password is required.");
+  }
   if (expectedRoleRaw && !isRole(expectedRoleRaw)) {
     return jsonErr(c, 400, "VALIDATION_ERROR", "Invalid expectedRole.");
   }
@@ -1056,6 +1240,18 @@ app.post(`${API_BASE}/auth/login`, async (c) => {
       entityId: email || "unknown",
       actorId: "anonymous",
       actorRole: "player",
+      metadata: { reason: "invalid_credentials", email, requestId: requestIdFromContext(c) },
+    });
+    return jsonErr(c, 401, "UNAUTHENTICATED", "Invalid credentials.");
+  }
+  const expectedPassword = await getUserPassword(user);
+  if (password !== expectedPassword) {
+    await writeAuditLog({
+      action: "auth_login_failed",
+      entityType: "auth",
+      entityId: user.id,
+      actorId: user.id,
+      actorRole: user.role,
       metadata: { reason: "invalid_credentials", email, requestId: requestIdFromContext(c) },
     });
     return jsonErr(c, 401, "UNAUTHENTICATED", "Invalid credentials.");
@@ -1098,8 +1294,14 @@ app.post(`${API_BASE}/auth/signup`, async (c) => {
   if (signupRateErr) return signupRateErr;
   const body = await c.req.json().catch(() => ({}));
   const email = String(body?.email || "").trim().toLowerCase();
+  const password = String(body?.password || "").trim();
+  const passwordMinLength = minimumPasswordLength();
   const roleRaw = String(body?.role || "player").trim().toLowerCase() || "player";
   if (!email) return jsonErr(c, 400, "VALIDATION_ERROR", "Email is required.");
+  if (!password) return jsonErr(c, 400, "VALIDATION_ERROR", "Password is required.");
+  if (password.length < passwordMinLength) {
+    return jsonErr(c, 400, "VALIDATION_ERROR", `Password must be at least ${passwordMinLength} characters.`);
+  }
   if (!isValidEmail(email)) {
     return jsonErr(c, 400, "VALIDATION_ERROR", "Email must be a valid address.");
   }
@@ -1138,6 +1340,7 @@ app.post(`${API_BASE}/auth/signup`, async (c) => {
     createdAt: nowIso(),
   };
   await kv.set(`user:${newUser.id}`, newUser);
+  await setUserPassword(newUser.id, password);
   await writeAuditLog({
     action: "auth_signup_succeeded",
     entityType: "auth",
@@ -1188,6 +1391,59 @@ app.post(`${API_BASE}/auth/reset-password`, async (c) => {
   });
 });
 
+app.post(`${API_BASE}/auth/change-password`, async (c) => {
+  const result = await requireAuth(c);
+  if ("err" in result) return result.err;
+
+  const changeLimit = rateLimitConfig("auth_change_password", { max: 6, windowSeconds: 60 });
+  const changeRateErr = await enforceRateLimit(c, {
+    scope: "auth_change_password",
+    key: requestClientKey(c, result.user.id),
+    max: changeLimit.max,
+    windowSeconds: changeLimit.windowSeconds,
+  });
+  if (changeRateErr) return changeRateErr;
+
+  const body = await c.req.json().catch(() => ({}));
+  const currentPassword = String(body?.currentPassword || "");
+  const newPassword = String(body?.newPassword || "").trim();
+  const passwordMinLength = minimumPasswordLength();
+  if (!currentPassword) {
+    return jsonErr(c, 400, "VALIDATION_ERROR", "currentPassword is required.");
+  }
+  if (!newPassword) {
+    return jsonErr(c, 400, "VALIDATION_ERROR", "newPassword is required.");
+  }
+  if (newPassword.length < passwordMinLength) {
+    return jsonErr(c, 400, "VALIDATION_ERROR", `newPassword must be at least ${passwordMinLength} characters.`);
+  }
+
+  const expectedPassword = await getUserPassword(result.user);
+  if (currentPassword !== expectedPassword) {
+    await writeAuditLog({
+      action: "auth_change_password_failed",
+      entityType: "auth",
+      entityId: result.user.id,
+      actorId: result.user.id,
+      actorRole: result.user.role,
+      metadata: { reason: "current_password_mismatch", requestId: requestIdFromContext(c) },
+    });
+    return jsonErr(c, 401, "UNAUTHENTICATED", "Current password is incorrect.");
+  }
+
+  await setUserPassword(result.user.id, newPassword);
+  await writeAuditLog({
+    action: "auth_change_password_succeeded",
+    entityType: "auth",
+    entityId: result.user.id,
+    actorId: result.user.id,
+    actorRole: result.user.role,
+    metadata: { requestId: requestIdFromContext(c) },
+  });
+
+  return jsonOk(c, { changed: true });
+});
+
 app.post(`${API_BASE}/auth/oauth/start`, async (c) => {
   const oauthLimit = rateLimitConfig("auth_oauth_start", { max: 20, windowSeconds: 60 });
   const oauthRateErr = await enforceRateLimit(c, {
@@ -1207,16 +1463,25 @@ app.post(`${API_BASE}/auth/oauth/start`, async (c) => {
   if (!isRole(expectedRole)) {
     return jsonErr(c, 400, "VALIDATION_ERROR", "Invalid expectedRole.");
   }
+  const allowedOrigins = oauthRedirectAllowedOrigins();
+  const enforceRedirectOrigin = oauthStrictRedirectValidation() || allowedOrigins.length > 0;
+  if (enforceRedirectOrigin && !redirectUri) {
+    return jsonErr(c, 400, "VALIDATION_ERROR", "redirectUri is required for OAuth redirect validation.");
+  }
   if (redirectUri) {
     try {
       const parsed = new URL(redirectUri);
       if (!["http:", "https:"].includes(parsed.protocol)) {
         return jsonErr(c, 400, "VALIDATION_ERROR", "redirectUri must use http or https.");
       }
+      if (enforceRedirectOrigin && !allowedOrigins.includes(parsed.origin)) {
+        return jsonErr(c, 400, "VALIDATION_ERROR", "redirectUri origin is not allowed.");
+      }
     } catch {
       return jsonErr(c, 400, "VALIDATION_ERROR", "redirectUri must be a valid absolute URL.");
     }
   }
+  const purgedStateCount = await cleanupExpiredOAuthStates();
 
   await seedUsers();
   const users = (await kv.getByPrefix("user:")) as ApiUser[];
@@ -1232,20 +1497,22 @@ app.post(`${API_BASE}/auth/oauth/start`, async (c) => {
     return jsonErr(c, 404, "NOT_FOUND", "No account is available for this OAuth role.");
   }
 
+  const oauthState = await createOAuthState({
+    provider,
+    expectedRole: expectedRole as Role,
+    email: targetUser.email,
+    redirectUri: redirectUri || undefined,
+  });
   const oauthRedirectBase = redirectUri || `https://example.com/oauth/${provider}`;
   let oauthRedirectUrl = oauthRedirectBase;
   try {
     const parsed = new URL(oauthRedirectBase);
     parsed.searchParams.set("oauth", "1");
-    parsed.searchParams.set("provider", provider);
-    parsed.searchParams.set("role", expectedRole);
-    parsed.searchParams.set("email", targetUser.email);
+    parsed.searchParams.set("state", oauthState.token);
     oauthRedirectUrl = parsed.toString();
   } catch {
     const sep = oauthRedirectBase.includes("?") ? "&" : "?";
-    oauthRedirectUrl = `${oauthRedirectBase}${sep}oauth=1&provider=${encodeURIComponent(provider)}&role=${encodeURIComponent(
-      expectedRole,
-    )}&email=${encodeURIComponent(targetUser.email)}`;
+    oauthRedirectUrl = `${oauthRedirectBase}${sep}oauth=1&state=${encodeURIComponent(oauthState.token)}`;
   }
 
   await writeAuditLog({
@@ -1259,6 +1526,8 @@ app.post(`${API_BASE}/auth/oauth/start`, async (c) => {
       expectedRole,
       redirectUri: redirectUri || null,
       targetEmail: targetUser.email,
+      stateExpiresAt: oauthState.expiresAt,
+      purgedStateCount,
       requestId: requestIdFromContext(c),
     },
   });
@@ -1266,6 +1535,114 @@ app.post(`${API_BASE}/auth/oauth/start`, async (c) => {
     provider,
     expectedRole,
     redirectUrl: oauthRedirectUrl,
+  });
+});
+
+app.post(`${API_BASE}/auth/oauth/callback`, async (c) => {
+  await seedUsers();
+  const body = await c.req.json().catch(() => ({}));
+  const stateToken = String(body?.state || "").trim();
+  if (!stateToken) {
+    return jsonErr(c, 400, "VALIDATION_ERROR", "OAuth state is required.");
+  }
+  const oauthState = await consumeOAuthState(stateToken);
+  if (!oauthState) {
+    await writeAuditLog({
+      action: "auth_oauth_callback_failed",
+      entityType: "auth",
+      entityId: "oauth_state",
+      actorId: "anonymous",
+      actorRole: "player",
+      metadata: {
+        reason: "missing_or_reused_state",
+        stateTokenPrefix: stateToken.slice(0, 8),
+        requestId: requestIdFromContext(c),
+      },
+    });
+    return jsonErr(c, 401, "UNAUTHENTICATED", "OAuth callback state is invalid or already used.");
+  }
+  const expiresAtMs = new Date(oauthState.expiresAt).getTime();
+  if (Number.isNaN(expiresAtMs) || expiresAtMs <= Date.now()) {
+    await writeAuditLog({
+      action: "auth_oauth_callback_failed",
+      entityType: "auth",
+      entityId: "oauth_state",
+      actorId: "anonymous",
+      actorRole: oauthState.expectedRole,
+      metadata: {
+        reason: "state_expired",
+        provider: oauthState.provider,
+        expectedRole: oauthState.expectedRole,
+        email: oauthState.email,
+        stateTokenPrefix: oauthState.token.slice(0, 8),
+        requestId: requestIdFromContext(c),
+      },
+    });
+    return jsonErr(c, 401, "UNAUTHENTICATED", "OAuth callback state has expired.");
+  }
+  const provider = oauthState.provider;
+  const expectedRole = oauthState.expectedRole;
+  const resolvedEmail = oauthState.email.trim().toLowerCase();
+  const requestedProvider = String(body?.provider || "").trim().toLowerCase();
+  if (requestedProvider && requestedProvider !== provider) {
+    return jsonErr(c, 400, "VALIDATION_ERROR", "OAuth provider does not match callback state.");
+  }
+  const users = (await kv.getByPrefix("user:")) as ApiUser[];
+  const user = users.find((u) => u.email.toLowerCase() === resolvedEmail);
+  if (!user) {
+    await writeAuditLog({
+      action: "auth_oauth_callback_failed",
+      entityType: "auth",
+      entityId: resolvedEmail || "unknown",
+      actorId: "anonymous",
+      actorRole: expectedRole,
+      metadata: {
+        provider,
+        expectedRole,
+        email: resolvedEmail,
+        reason: "user_not_found",
+        stateTokenPrefix: oauthState.token.slice(0, 8),
+        requestId: requestIdFromContext(c),
+      },
+    });
+    return jsonErr(c, 401, "UNAUTHENTICATED", "OAuth callback identity was not recognized.");
+  }
+  if (user.role !== expectedRole) {
+    await writeAuditLog({
+      action: "auth_oauth_callback_failed",
+      entityType: "auth",
+      entityId: user.id,
+      actorId: user.id,
+      actorRole: user.role,
+      metadata: {
+        provider,
+        expectedRole,
+        email: user.email,
+        reason: "role_mismatch",
+        stateTokenPrefix: oauthState.token.slice(0, 8),
+        requestId: requestIdFromContext(c),
+      },
+    });
+    return jsonErr(c, 403, "ROLE_MISMATCH", `This account is not a ${expectedRole} account.`);
+  }
+  await writeAuditLog({
+    action: "auth_oauth_callback_succeeded",
+    entityType: "auth",
+    entityId: user.id,
+    actorId: user.id,
+    actorRole: user.role,
+    metadata: {
+      provider,
+      expectedRole,
+      email: user.email,
+      stateTokenPrefix: oauthState.token.slice(0, 8),
+      requestId: requestIdFromContext(c),
+    },
+  });
+  return jsonOk(c, {
+    accessToken: `mock-access-${user.id}`,
+    refreshToken: `mock-refresh-${user.id}`,
+    user,
   });
 });
 
@@ -1680,19 +2057,128 @@ app.patch(`${API_BASE}/admin/users/:id`, async (c) => {
   const target = (await kv.get(`user:${c.req.param("id")}`)) as ApiUser | null;
   if (!target) return jsonErr(c, 404, "NOT_FOUND", "User not found.");
   const body = await c.req.json().catch(() => ({}));
-  if (result.role === "staff" && body?.role === "admin") {
-    return jsonErr(c, 403, "FORBIDDEN", "Staff cannot promote users to admin.");
+  const patch = body && typeof body === "object" ? body : {};
+
+  const adminAllowedFields = new Set([
+    "name",
+    "phone",
+    "avatar",
+    "skillLevel",
+    "coachProfile",
+    "coachExpertise",
+    "role",
+  ]);
+  const staffAllowedFields = new Set([
+    "name",
+    "phone",
+    "avatar",
+    "skillLevel",
+    "coachProfile",
+    "coachExpertise",
+  ]);
+  const allowedFields = result.role === "admin" ? adminAllowedFields : staffAllowedFields;
+  const invalidFields = Object.keys(patch).filter((key) => !allowedFields.has(key));
+  if (invalidFields.length > 0) {
+    return jsonErr(
+      c,
+      400,
+      "VALIDATION_ERROR",
+      `Unsupported fields: ${invalidFields.join(", ")}.`,
+      { invalidFields },
+    );
   }
-  const updated = { ...target, ...body };
+  if (result.role === "staff" && target.role === "admin") {
+    return jsonErr(c, 403, "FORBIDDEN", "Staff cannot modify admin accounts.");
+  }
+  if (patch.role != null) {
+    const nextRole = String(patch.role).trim().toLowerCase();
+    if (!isRole(nextRole)) {
+      return jsonErr(c, 400, "VALIDATION_ERROR", "Invalid role.");
+    }
+  }
+  if (patch.skillLevel != null && patch.skillLevel !== "") {
+    const nextSkill = String(patch.skillLevel).trim().toLowerCase();
+    if (!isValidSkillLevel(nextSkill)) {
+      return jsonErr(c, 400, "VALIDATION_ERROR", "Invalid skillLevel.");
+    }
+  }
+  if (patch.coachExpertise != null && !Array.isArray(patch.coachExpertise)) {
+    return jsonErr(c, 400, "VALIDATION_ERROR", "coachExpertise must be an array of strings.");
+  }
+  if (Array.isArray(patch.coachExpertise) && patch.coachExpertise.some((item: unknown) => typeof item !== "string")) {
+    return jsonErr(c, 400, "VALIDATION_ERROR", "coachExpertise must be an array of strings.");
+  }
+
+  const updates: Partial<ApiUser> = {};
+  if (patch.name != null) updates.name = String(patch.name).trim();
+  if (patch.phone != null) updates.phone = String(patch.phone).trim();
+  if (patch.avatar != null) updates.avatar = String(patch.avatar).trim();
+  if (patch.skillLevel != null) {
+    const skillLevel = String(patch.skillLevel).trim().toLowerCase();
+    updates.skillLevel = skillLevel || undefined;
+  }
+  if (patch.coachProfile != null) updates.coachProfile = String(patch.coachProfile).trim();
+  if (patch.coachExpertise != null) {
+    updates.coachExpertise = Array.from(new Set((patch.coachExpertise as unknown[]).map((item) => String(item).trim()).filter(Boolean)));
+  }
+  if (result.role === "admin" && patch.role != null) {
+    updates.role = String(patch.role).trim().toLowerCase() as Role;
+  }
+
+  if (Object.keys(updates).length === 0) {
+    return jsonErr(c, 400, "VALIDATION_ERROR", "No valid fields provided for update.");
+  }
+  const updated = { ...target, ...updates };
   await kv.set(`user:${target.id}`, updated);
+  await writeAuditLog({
+    action: "admin_user_updated",
+    entityType: "user",
+    entityId: target.id,
+    actorId: result.user.id,
+    actorRole: result.role,
+    metadata: {
+      requestId: requestIdFromContext(c),
+      updatedFields: Object.keys(updates),
+      beforeRole: target.role,
+      afterRole: updated.role,
+    },
+  });
   return jsonOk(c, updated);
 });
 
 app.delete(`${API_BASE}/admin/users/:id`, async (c) => {
   const result = await requireRole(c, ["admin"]);
   if ("err" in result) return result.err;
-  await kv.del(`user:${c.req.param("id")}`);
-  return jsonOk(c, { deleted: true });
+  const targetId = String(c.req.param("id") || "").trim();
+  if (!targetId) return jsonErr(c, 400, "VALIDATION_ERROR", "User id is required.");
+  if (result.user.id === targetId) {
+    return jsonErr(c, 409, "CONFLICT", "You cannot delete your own account.");
+  }
+  const target = (await kv.get(`user:${targetId}`)) as ApiUser | null;
+  if (!target) return jsonErr(c, 404, "NOT_FOUND", "User not found.");
+
+  if (target.role === "admin") {
+    const users = (await kv.getByPrefix("user:")) as ApiUser[];
+    const adminCount = users.filter((user) => user.role === "admin").length;
+    if (adminCount <= 1) {
+      return jsonErr(c, 409, "CONFLICT", "Cannot delete the last admin account.");
+    }
+  }
+
+  await kv.mdel([`user:${targetId}`, authCredentialKey(targetId)]);
+  await writeAuditLog({
+    action: "admin_user_deleted",
+    entityType: "user",
+    entityId: targetId,
+    actorId: result.user.id,
+    actorRole: result.role,
+    metadata: {
+      requestId: requestIdFromContext(c),
+      deletedRole: target.role,
+      deletedEmail: target.email,
+    },
+  });
+  return jsonOk(c, { deleted: true, id: targetId });
 });
 
 // Courts
@@ -1761,7 +2247,7 @@ app.get(`${API_BASE}/bookings`, async (c) => {
   }
   let data = all;
   if (result.role === "player") {
-    data = all.filter((b) => b.userId === result.user.id);
+    data = all.filter((b) => b.userId === result.user.id || (b.players || []).includes(result.user.id));
   } else if (result.role === "coach") {
     data = all.filter((b) => b.userId === result.user.id || b.coachId === result.user.id || (b.players || []).includes(result.user.id));
   }
@@ -1804,7 +2290,7 @@ app.get(`${API_BASE}/bookings/history`, async (c) => {
   const all = (await kv.getByPrefix("booking:")) as ApiBooking[];
   let scoped = all;
   if (result.role === "player") {
-    scoped = all.filter((b) => b.userId === result.user.id);
+    scoped = all.filter((b) => b.userId === result.user.id || (b.players || []).includes(result.user.id));
   } else if (result.role === "coach") {
     scoped = all.filter((b) => b.userId === result.user.id || b.coachId === result.user.id || (b.players || []).includes(result.user.id));
   }
@@ -1923,7 +2409,7 @@ app.get(`${API_BASE}/bookings/:id/receipt`, async (c) => {
   if ("err" in result) return result.err;
   const booking = (await kv.get(`booking:${c.req.param("id")}`)) as ApiBooking | null;
   if (!booking) return jsonErr(c, 404, "NOT_FOUND", "Booking not found.");
-  if (!bookingCanBeReadBy(booking, result.user, result.role)) {
+  if (!bookingReceiptCanBeReadBy(booking, result.user, result.role)) {
     return jsonErr(c, 403, "FORBIDDEN", "Cannot access this receipt.");
   }
   const court = (await kv.get(`court:${booking.courtId}`)) as ApiCourt | null;
@@ -1940,7 +2426,7 @@ app.get(`${API_BASE}/public/receipts/:token`, async (c) => {
   if (!booking) return jsonErr(c, 404, "NOT_FOUND", "Receipt not found.");
   const court = (await kv.get(`court:${booking.courtId}`)) as ApiCourt | null;
   const player = (await kv.get(`user:${booking.userId}`)) as ApiUser | null;
-  return jsonOk(c, toReceiptPayload(booking, court, player));
+  return jsonOk(c, toReceiptPayload(booking, court, player, { publicView: true }));
 });
 
 app.post(`${API_BASE}/bookings`, async (c) => {
@@ -2626,6 +3112,9 @@ app.post(`${API_BASE}/payments/:id/retry`, async (c) => {
   if (!paymentCanBeInitiatedBy(booking, result.user, result.role)) {
     return jsonErr(c, 403, "FORBIDDEN", "Cannot initiate payment for this booking.");
   }
+  if (booking.status === "cancelled" || booking.status === "completed" || booking.status === "no_show") {
+    return jsonErr(c, 409, "CONFLICT", `Cannot initiate payment for ${booking.status} booking.`);
+  }
   if (booking.paymentStatus === "paid") {
     return jsonErr(c, 409, "CONFLICT", "Booking is already paid.");
   }
@@ -2646,8 +3135,7 @@ app.post(`${API_BASE}/payments/:id/retry`, async (c) => {
     method: "POST",
     headers: {
       "content-type": "application/json",
-      "x-user-id": result.user.id,
-      "x-user-role": result.role,
+      ...internalAuthHeaders(c, result.user.id, result.role),
     },
     body: JSON.stringify({ bookingId: tx.bookingId, method: tx.method }),
   });
@@ -2668,6 +3156,13 @@ app.post(`${API_BASE}/payments/webhook`, async (c) => {
   });
   if (webhookRateErr) return webhookRateErr;
   const body = await c.req.json().catch(() => ({}));
+  const expectedSecret = paymentWebhookSecret();
+  const signature =
+    String(c.req.header("x-payment-signature") || "").trim() ||
+    String(c.req.header("x-paymongo-signature") || "").trim();
+  if (expectedSecret && signature !== expectedSecret) {
+    return jsonErr(c, 401, "UNAUTHENTICATED", "Invalid webhook signature.");
+  }
   const webhookEventId =
     String(body?.eventId || "").trim() ||
     String(body?.id || "").trim() ||
@@ -2678,14 +3173,6 @@ app.post(`${API_BASE}/payments/webhook`, async (c) => {
     if (existing) {
       return jsonOk(c, { acknowledged: true, txId: existing.txId, status: existing.status, replayed: true });
     }
-  }
-
-  const expectedSecret = paymentWebhookSecret();
-  const signature =
-    String(c.req.header("x-payment-signature") || "").trim() ||
-    String(c.req.header("x-paymongo-signature") || "").trim();
-  if (expectedSecret && signature !== expectedSecret) {
-    return jsonErr(c, 401, "UNAUTHENTICATED", "Invalid webhook signature.");
   }
 
   const txId =
@@ -2703,11 +3190,12 @@ app.post(`${API_BASE}/payments/webhook`, async (c) => {
     String(body?.type || "").trim() ||
     String(body?.status || "").trim() ||
     String(body?.data?.attributes?.status || "").trim();
-  const nextStatus = normalizeWebhookPaymentStatus(eventType);
+  const incomingStatus = normalizeWebhookPaymentStatus(eventType, tx.status);
 
   const booking = (await kv.get(`booking:${tx.bookingId}`)) as ApiBooking | null;
   if (!booking) return jsonErr(c, 404, "NOT_FOUND", "Booking not found for payment transaction.");
 
+  const nextStatus = resolveNextTxStatus(tx.status, incomingStatus);
   const updatedTx = withPaymentTransactionUpdate(tx, {
     status: nextStatus,
     providerPayload: body,
@@ -2715,7 +3203,7 @@ app.post(`${API_BASE}/payments/webhook`, async (c) => {
   });
   await kv.set(`payment_tx:${tx.id}`, updatedTx);
 
-  if (nextStatus === "paid" && booking.paymentStatus !== "paid") {
+  if (nextStatus === "paid" && booking.status !== "cancelled" && booking.paymentStatus !== "paid") {
     const updatedBooking = withBookingUpdate(booking, { paymentStatus: "paid", paymentDueAt: undefined });
     await kv.set(`booking:${booking.id}`, updatedBooking);
     await writeAuditLog({
@@ -2731,6 +3219,21 @@ app.post(`${API_BASE}/payments/webhook`, async (c) => {
       title: "Payment Confirmed",
       message: `Payment for booking ${booking.id} has been confirmed.`,
       type: "success",
+    });
+  } else if (nextStatus === "paid" && booking.status === "cancelled") {
+    await writeAuditLog({
+      action: "payment_webhook_paid_cancelled_booking",
+      entityType: "payment_tx",
+      entityId: tx.id,
+      actorId: "system:webhook",
+      actorRole: "admin",
+      metadata: { bookingId: booking.id, bookingStatus: booking.status, provider: tx.provider, method: tx.method },
+    });
+    await notify({
+      userId: booking.userId,
+      title: "Payment Received After Cancellation",
+      message: `Payment for cancelled booking ${booking.id} was received and is under review.`,
+      type: "warning",
     });
   } else if (["failed", "expired", "cancelled"].includes(nextStatus)) {
     await writeAuditLog({
@@ -3267,8 +3770,7 @@ app.post(`${API_BASE}/admin/payments/reconciliation/resolve/bulk`, async (c) => 
       method: "POST",
       headers: {
         "content-type": "application/json",
-        "x-user-id": result.user.id,
-        "x-user-role": result.role,
+        ...internalAuthHeaders(c, result.user.id, result.role),
       },
       body: JSON.stringify(payload),
     });
@@ -3336,8 +3838,7 @@ app.post(`${API_BASE}/admin/payments/reconciliation/resolve/by-filter`, async (c
       method: "POST",
       headers: {
         "content-type": "application/json",
-        "x-user-id": result.user.id,
-        "x-user-role": result.role,
+        ...internalAuthHeaders(c, result.user.id, result.role),
       },
       body: JSON.stringify(payload),
     });
@@ -4247,8 +4748,43 @@ app.post(`${API_BASE}/plans`, async (c) => {
   const result = await requireRole(c, ["admin"]);
   if ("err" in result) return result.err;
   const body = await c.req.json().catch(() => ({}));
-  const plan = { ...body, id: body?.id || id() };
+  const name = String(body?.name || "").trim();
+  if (!name) return jsonErr(c, 400, "VALIDATION_ERROR", "name is required.");
+  const price = Number(body?.price);
+  if (!isValidCurrencyAmount(price)) return jsonErr(c, 400, "VALIDATION_ERROR", "price must be a valid non-negative currency amount.");
+  const interval = String(body?.interval || "").trim().toLowerCase();
+  if (!isValidPlanInterval(interval)) {
+    return jsonErr(c, 400, "VALIDATION_ERROR", `interval must be one of: ${PLAN_INTERVALS.join(", ")}.`);
+  }
+  const tier = String(body?.tier || "").trim().toLowerCase();
+  if (!isValidPlanTier(tier)) {
+    return jsonErr(c, 400, "VALIDATION_ERROR", `tier must be one of: ${PLAN_TIERS.join(", ")}.`);
+  }
+  const featuresRaw = body?.features;
+  if (featuresRaw != null && !Array.isArray(featuresRaw)) {
+    return jsonErr(c, 400, "VALIDATION_ERROR", "features must be an array of strings.");
+  }
+  if (Array.isArray(featuresRaw) && featuresRaw.some((item: unknown) => typeof item !== "string")) {
+    return jsonErr(c, 400, "VALIDATION_ERROR", "features must be an array of strings.");
+  }
+  const plan = {
+    id: body?.id || id(),
+    name,
+    price,
+    interval,
+    tier,
+    description: String(body?.description || "").trim(),
+    features: Array.from(new Set((Array.isArray(featuresRaw) ? featuresRaw : []).map((item) => String(item).trim()).filter(Boolean))),
+  };
   await kv.set(`plan:${plan.id}`, plan);
+  await writeAuditLog({
+    action: "admin_plan_created",
+    entityType: "plan",
+    entityId: String(plan.id),
+    actorId: result.user.id,
+    actorRole: result.role,
+    metadata: { requestId: requestIdFromContext(c), name: plan.name, interval: plan.interval, tier: plan.tier },
+  });
   return jsonOk(c, plan);
 });
 
@@ -4258,15 +4794,83 @@ app.patch(`${API_BASE}/plans/:id`, async (c) => {
   const existing = await kv.get(`plan:${c.req.param("id")}`);
   if (!existing) return jsonErr(c, 404, "NOT_FOUND", "Plan not found.");
   const patch = await c.req.json().catch(() => ({}));
-  const updated = { ...existing, ...patch };
+  const allowedFields = new Set(["name", "price", "interval", "tier", "description", "features"]);
+  const invalidFields = Object.keys(patch || {}).filter((key) => !allowedFields.has(key));
+  if (invalidFields.length > 0) {
+    return jsonErr(c, 400, "VALIDATION_ERROR", `Unsupported fields: ${invalidFields.join(", ")}.`, { invalidFields });
+  }
+
+  const updates: Record<string, unknown> = {};
+  if (patch?.name != null) {
+    const name = String(patch.name).trim();
+    if (!name) return jsonErr(c, 400, "VALIDATION_ERROR", "name cannot be empty.");
+    updates.name = name;
+  }
+  if (patch?.price != null) {
+    const price = Number(patch.price);
+    if (!isValidCurrencyAmount(price)) {
+      return jsonErr(c, 400, "VALIDATION_ERROR", "price must be a valid non-negative currency amount.");
+    }
+    updates.price = price;
+  }
+  if (patch?.interval != null) {
+    const interval = String(patch.interval).trim().toLowerCase();
+    if (!isValidPlanInterval(interval)) {
+      return jsonErr(c, 400, "VALIDATION_ERROR", `interval must be one of: ${PLAN_INTERVALS.join(", ")}.`);
+    }
+    updates.interval = interval;
+  }
+  if (patch?.tier != null) {
+    const tier = String(patch.tier).trim().toLowerCase();
+    if (!isValidPlanTier(tier)) {
+      return jsonErr(c, 400, "VALIDATION_ERROR", `tier must be one of: ${PLAN_TIERS.join(", ")}.`);
+    }
+    updates.tier = tier;
+  }
+  if (patch?.description != null) updates.description = String(patch.description).trim();
+  if (patch?.features != null) {
+    if (!Array.isArray(patch.features) || patch.features.some((item: unknown) => typeof item !== "string")) {
+      return jsonErr(c, 400, "VALIDATION_ERROR", "features must be an array of strings.");
+    }
+    updates.features = Array.from(new Set((patch.features as unknown[]).map((item) => String(item).trim()).filter(Boolean)));
+  }
+  if (Object.keys(updates).length === 0) {
+    return jsonErr(c, 400, "VALIDATION_ERROR", "No valid fields provided for update.");
+  }
+  const updated = { ...existing, ...updates };
   await kv.set(`plan:${c.req.param("id")}`, updated);
+  await writeAuditLog({
+    action: "admin_plan_updated",
+    entityType: "plan",
+    entityId: String(c.req.param("id")),
+    actorId: result.user.id,
+    actorRole: result.role,
+    metadata: { requestId: requestIdFromContext(c), updatedFields: Object.keys(updates) },
+  });
   return jsonOk(c, updated);
 });
 
 app.delete(`${API_BASE}/plans/:id`, async (c) => {
   const result = await requireRole(c, ["admin"]);
   if ("err" in result) return result.err;
-  await kv.del(`plan:${c.req.param("id")}`);
+  const planId = String(c.req.param("id") || "").trim();
+  if (!planId) return jsonErr(c, 400, "VALIDATION_ERROR", "Plan id is required.");
+  const existing = await kv.get(`plan:${planId}`);
+  if (!existing) return jsonErr(c, 404, "NOT_FOUND", "Plan not found.");
+  const activeSubs = (await kv.getByPrefix("subscription:")) as ApiSubscription[];
+  const hasActiveSubscriptions = activeSubs.some((sub) => sub.planId === planId && sub.status === "active");
+  if (hasActiveSubscriptions) {
+    return jsonErr(c, 409, "CONFLICT", "Cannot delete plan with active subscriptions.");
+  }
+  await kv.del(`plan:${planId}`);
+  await writeAuditLog({
+    action: "admin_plan_deleted",
+    entityType: "plan",
+    entityId: planId,
+    actorId: result.user.id,
+    actorRole: result.role,
+    metadata: { requestId: requestIdFromContext(c) },
+  });
   return jsonOk(c, { deleted: true });
 });
 
@@ -4276,6 +4880,15 @@ app.post(`${API_BASE}/subscriptions`, async (c) => {
   const body = await c.req.json().catch(() => ({}));
   const planId = String(body?.planId || "");
   if (!planId) return jsonErr(c, 400, "VALIDATION_ERROR", "planId is required.");
+  const paymentMethod = String(body?.paymentMethod || "card").trim().toLowerCase();
+  if (!isValidSubscriptionPaymentMethod(paymentMethod)) {
+    return jsonErr(
+      c,
+      400,
+      "VALIDATION_ERROR",
+      `paymentMethod must be one of: ${SUBSCRIPTION_PAYMENT_METHODS.join(", ")}.`,
+    );
+  }
   const plan = await kv.get(`plan:${planId}`);
   if (!plan) return jsonErr(c, 404, "NOT_FOUND", "Plan not found.");
 
@@ -4287,7 +4900,7 @@ app.post(`${API_BASE}/subscriptions`, async (c) => {
     id: id(),
     userId: result.user.id,
     planId,
-    paymentMethod: body?.paymentMethod || "card",
+    paymentMethod,
     status: "active",
     createdAt: nowIso(),
   };

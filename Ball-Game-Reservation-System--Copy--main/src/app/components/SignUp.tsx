@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { useNavigate, Link, useLocation } from 'react-router-dom';
 import { useApp } from '@/context/AppContext';
+import { PASSWORD_MIN_LENGTH } from '@/config/authPolicy';
 import { Mail, Lock, User, Loader2, Eye, EyeOff } from 'lucide-react';
 import { toast } from 'sonner';
 
@@ -22,6 +23,10 @@ export function SignUp() {
     
     if (!termsAccepted) {
       toast.error('You must accept the Terms of Service to continue.');
+      return;
+    }
+    if (password.trim().length < PASSWORD_MIN_LENGTH) {
+      toast.error(`Password must be at least ${PASSWORD_MIN_LENGTH} characters.`);
       return;
     }
 
@@ -109,6 +114,7 @@ export function SignUp() {
                 onChange={(e) => setPassword(e.target.value)}
                 className="w-full px-4 py-2 border border-slate-400 bg-white/95 rounded-lg shadow-sm text-slate-900 placeholder:text-slate-600 focus:outline-none focus:ring-2 focus:ring-green-500 pl-10 pr-10"
                 placeholder="Enter your password"
+                minLength={PASSWORD_MIN_LENGTH}
                 required
               />
               <Lock className="w-5 h-5 text-slate-500 absolute left-3 top-2.5" />

@@ -4,6 +4,7 @@ import { Calendar as CalendarIcon } from 'lucide-react';
 import { addMinutes, format } from 'date-fns';
 import { toast } from 'sonner';
 import { useApp } from '@/context/AppContext';
+import { backendApi } from '@/context/backendApi';
 
 type BookingType = 'private' | 'open_play' | 'training';
 
@@ -38,6 +39,7 @@ export function BookingInterface() {
   const [bookingType, setBookingType] = useState<BookingType>('private');
 
   const selectedCourt = useMemo(() => courts.find((c) => c.id === selectedCourtId), [courts, selectedCourtId]);
+  const usingBackendApi = backendApi.isEnabled;
 
   const timeOptions = useMemo(() => {
     const step = config.bookingInterval || 30;
@@ -71,7 +73,7 @@ export function BookingInterface() {
     return formatHHmm(addMinutes(startDate, duration));
   }, [duration, selectedTime]);
 
-  const handleProceed = () => {
+  const handleProceed = async () => {
     if (!currentUser) {
       toast.error('Please sign in to continue.');
       return;
@@ -97,6 +99,23 @@ export function BookingInterface() {
       return;
     }
 
+    let bookingHoldId: string | undefined = undefined;
+    if (usingBackendApi) {
+      try {
+        const hold = await backendApi.createBookingHold({
+          courtId: selectedCourt.id,
+          date: selectedDate,
+          startTime: selectedTime,
+          endTime,
+          ttlMinutes: 10,
+        });
+        bookingHoldId = String(hold?.id || '');
+      } catch (error: any) {
+        toast.error(error?.message || 'Selected slot is no longer available.');
+        return;
+      }
+    }
+
     const dateObj = new Date(`${selectedDate}T00:00:00`);
     navigate('/booking/payment', {
       state: {
@@ -108,6 +127,7 @@ export function BookingInterface() {
           endTime,
           duration,
           amount: totalPrice,
+          bookingHoldId,
         },
       },
     });
@@ -283,7 +303,7 @@ export function BookingInterface() {
           </button>
           <button
             type="button"
-            onClick={handleProceed}
+            onClick={() => void handleProceed()}
             className="h-11 rounded-lg bg-teal-600 px-6 text-white hover:bg-teal-700 sm:w-auto"
           >
             Proceed to Payment

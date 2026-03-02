@@ -37,10 +37,10 @@ interface SidebarProps {
 
 export function Sidebar({ currentView, onViewChange, role }: SidebarProps) {
   const { resolvedTheme, setTheme } = useTheme();
-  const { notifications, currentUser, logout, bookings } = useApp();
+  const { unreadNotificationCount, currentUser, logout, bookings } = useApp();
   const navigate = useNavigate();
   const [isLogoutConfirmOpen, setIsLogoutConfirmOpen] = React.useState(false);
-  const unreadCount = notifications.filter(n => n.userId === currentUser?.id && !n.read).length;
+  const unreadCount = unreadNotificationCount;
   const pendingCount = bookings.filter(b => b.status === 'pending').length;
 
   const handleConfirmLogout = () => {

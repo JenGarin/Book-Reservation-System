@@ -16,7 +16,7 @@ import { format } from 'date-fns';
 import { toast } from 'sonner';
 
 export function UserPortalView() {
-  const { currentUser, notifications, userSubscription, memberships, bookings, courts } = useApp();
+  const { currentUser, notifications, userSubscription, memberships, bookings, courts, cancelSubscription } = useApp();
   const location = useLocation();
   const navigate = useNavigate();
   const isAdmin = currentUser?.role === 'admin';
@@ -55,6 +55,17 @@ export function UserPortalView() {
       },
     });
     navigate('/my-bookings');
+  };
+
+  const handleCancelMembership = async () => {
+    if (!userSubscription?.id) return;
+    if (!confirm('Cancel your active membership subscription?')) return;
+    try {
+      await cancelSubscription(userSubscription.id);
+      toast.success('Subscription cancelled.');
+    } catch (error: any) {
+      toast.error(error?.message || 'Failed to cancel subscription.');
+    }
   };
 
   return (
@@ -126,6 +137,14 @@ export function UserPortalView() {
                 </div>
                 <ChevronRight size={16} className="text-slate-400 dark:text-slate-500" />
               </button>
+              {!isAdmin && userSubscription?.status === 'active' && (
+                <button
+                  onClick={() => void handleCancelMembership()}
+                  className="w-full p-3 rounded-lg border border-rose-200 bg-rose-50 text-rose-700 hover:bg-rose-100 transition-colors font-medium text-sm"
+                >
+                  Cancel Membership
+                </button>
+              )}
             </div>
           </div>
 
