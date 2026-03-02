@@ -4,6 +4,9 @@ import { logger } from "npm:hono/logger";
 import * as kv from "./kv_store.tsx";
 
 type Role = "admin" | "staff" | "coach" | "player";
+const ROLE_VALUES: Role[] = ["admin", "staff", "coach", "player"];
+const OAUTH_PROVIDERS = ["google", "facebook", "apple"] as const;
+type OAuthProvider = (typeof OAUTH_PROVIDERS)[number];
 
 type ApiUser = {
   id: string;
@@ -83,6 +86,29 @@ type ApiSubscription = {
   cancelledAt?: string;
 };
 
+type ApiFacilityConfig = {
+  openingTime: string;
+  closingTime: string;
+  bookingInterval: number;
+  bufferTime: number;
+  maxBookingDuration: number;
+  advanceBookingDays: number;
+  cancellationCutoffHours: number;
+  peakHours: Array<{ start: string; end: string }>;
+  maintenanceMode?: boolean;
+};
+
+type AdminDataSnapshot = {
+  users: ApiUser[];
+  courts: ApiCourt[];
+  bookings: ApiBooking[];
+  memberships: any[];
+  subscriptions: ApiSubscription[];
+  notifications: ApiNotification[];
+  coachApplications: ApiCoachApplication[];
+  config: ApiFacilityConfig;
+};
+
 type ApiCoachApplication = {
   id: string;
   coachId: string;
@@ -152,8 +178,27 @@ type ApiRateLimitRecord = {
   resetAt: string;
 };
 
+const isRole = (value: string): value is Role => ROLE_VALUES.includes(value as Role);
+const isValidEmail = (email: string) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+const isOAuthProvider = (value: string): value is OAuthProvider =>
+  OAUTH_PROVIDERS.includes(value as OAuthProvider);
+const allowPrivilegedSignup = () => {
+  try {
+    const raw = String(Deno.env.get("AUTH_ALLOW_PRIVILEGED_SIGNUP") || "").trim().toLowerCase();
+    return raw === "true" || raw === "1" || raw === "yes";
+  } catch {
+    return false;
+  }
+};
+
 export const app = new Hono();
 
+app.use("*", async (c, next) => {
+  const incoming = String(c.req.header("x-request-id") || "").trim();
+  const requestId = incoming || (globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
+  c.header("x-request-id", requestId);
+  await next();
+});
 app.use("*", logger(console.log));
 app.use(
   "/*",
@@ -166,9 +211,10 @@ app.use(
       "x-user-role",
       "x-idempotency-key",
       "x-payment-signature",
+      "x-request-id",
     ],
     allowMethods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-    exposeHeaders: ["Content-Length"],
+    exposeHeaders: ["Content-Length", "x-request-id"],
     maxAge: 600,
   }),
 );
@@ -308,8 +354,20 @@ const normalizeWebhookPaymentStatus = (raw: string) => {
   return "pending" as const;
 };
 
+const requestIdFromContext = (c: any) => {
+  const existing = String(c.res?.headers?.get?.("x-request-id") || "").trim();
+  if (existing) return String(existing);
+  const incoming = String(c.req?.header?.("x-request-id") || "").trim();
+  if (incoming) return incoming;
+  return globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+};
+
 const okPayload = (data: unknown, meta: Record<string, unknown> = {}) => ({ success: true, data, meta, error: null });
-const jsonOk = (c: any, data: any, meta: Record<string, unknown> = {}) => c.json(okPayload(data, meta));
+const jsonOk = (c: any, data: any, meta: Record<string, unknown> = {}) => {
+  const requestId = requestIdFromContext(c);
+  c.header("x-request-id", requestId);
+  return c.json(okPayload(data, { requestId, ...meta }));
+};
 
 const jsonErr = (
   c: any,
@@ -317,16 +375,109 @@ const jsonErr = (
   code: string,
   message: string,
   details: Record<string, unknown> = {},
-) =>
-  c.json(
+) => {
+  const requestId = requestIdFromContext(c);
+  c.header("x-request-id", requestId);
+  return c.json(
     {
       success: false,
       data: null,
-      meta: null,
+      meta: { requestId },
       error: { code, message, details },
     },
     status,
   );
+};
+
+const DEFAULT_FACILITY_CONFIG: ApiFacilityConfig = {
+  openingTime: "07:00",
+  closingTime: "22:00",
+  bookingInterval: 60,
+  bufferTime: 15,
+  maxBookingDuration: 120,
+  advanceBookingDays: 7,
+  cancellationCutoffHours: 24,
+  peakHours: [
+    { start: "17:00", end: "21:00" },
+    { start: "08:00", end: "12:00" },
+  ],
+  maintenanceMode: false,
+};
+
+const asNonNegativeInt = (value: unknown, fallback: number) => {
+  const raw = Number(value);
+  if (!Number.isFinite(raw)) return fallback;
+  return Math.max(0, Math.floor(raw));
+};
+
+const normalizeFacilityConfig = (raw: any): ApiFacilityConfig => {
+  const openingTime = isValidTime(String(raw?.openingTime || "")) ? String(raw.openingTime) : DEFAULT_FACILITY_CONFIG.openingTime;
+  const closingTime = isValidTime(String(raw?.closingTime || "")) ? String(raw.closingTime) : DEFAULT_FACILITY_CONFIG.closingTime;
+  const peakHoursRaw = Array.isArray(raw?.peakHours) ? raw.peakHours : DEFAULT_FACILITY_CONFIG.peakHours;
+  const peakHours = peakHoursRaw
+    .map((item: any) => ({
+      start: String(item?.start || ""),
+      end: String(item?.end || ""),
+    }))
+    .filter((item: { start: string; end: string }) => isValidTime(item.start) && isValidTime(item.end) && toMinutes(item.start) < toMinutes(item.end));
+
+  return {
+    openingTime,
+    closingTime,
+    bookingInterval: Math.max(15, asNonNegativeInt(raw?.bookingInterval, DEFAULT_FACILITY_CONFIG.bookingInterval)),
+    bufferTime: asNonNegativeInt(raw?.bufferTime, DEFAULT_FACILITY_CONFIG.bufferTime),
+    maxBookingDuration: Math.max(15, asNonNegativeInt(raw?.maxBookingDuration, DEFAULT_FACILITY_CONFIG.maxBookingDuration)),
+    advanceBookingDays: asNonNegativeInt(raw?.advanceBookingDays, DEFAULT_FACILITY_CONFIG.advanceBookingDays),
+    cancellationCutoffHours: asNonNegativeInt(raw?.cancellationCutoffHours, DEFAULT_FACILITY_CONFIG.cancellationCutoffHours),
+    peakHours: peakHours.length > 0 ? peakHours : DEFAULT_FACILITY_CONFIG.peakHours,
+    maintenanceMode: Boolean(raw?.maintenanceMode),
+  };
+};
+
+const validateFacilityConfig = (config: ApiFacilityConfig): string | null => {
+  if (!isValidTime(config.openingTime) || !isValidTime(config.closingTime)) {
+    return "openingTime and closingTime must be HH:MM.";
+  }
+  if (toMinutes(config.openingTime) >= toMinutes(config.closingTime)) {
+    return "openingTime must be earlier than closingTime.";
+  }
+  if (!Number.isFinite(config.bookingInterval) || config.bookingInterval < 15) {
+    return "bookingInterval must be at least 15 minutes.";
+  }
+  if (!Number.isFinite(config.maxBookingDuration) || config.maxBookingDuration < 15) {
+    return "maxBookingDuration must be at least 15 minutes.";
+  }
+  if (!Array.isArray(config.peakHours)) {
+    return "peakHours must be an array.";
+  }
+  for (const peak of config.peakHours) {
+    if (!isValidTime(peak.start) || !isValidTime(peak.end)) {
+      return "Each peakHours item must use HH:MM start/end values.";
+    }
+    if (toMinutes(peak.start) >= toMinutes(peak.end)) {
+      return "Each peakHours range must have start earlier than end.";
+    }
+  }
+  return null;
+};
+
+const getFacilityConfig = async (): Promise<ApiFacilityConfig> => {
+  const existing = (await kv.get("facility:config")) as ApiFacilityConfig | null;
+  if (existing) return normalizeFacilityConfig(existing);
+  const seeded = { ...DEFAULT_FACILITY_CONFIG };
+  await kv.set("facility:config", seeded);
+  return seeded;
+};
+
+const deleteByPrefixRecords = async <T extends { id?: string }>(prefix: string, records: T[]) => {
+  const keys = records
+    .map((record) => String(record?.id || "").trim())
+    .filter(Boolean)
+    .map((recordId) => `${prefix}:${recordId}`);
+  if (keys.length === 0) return 0;
+  await kv.mdel(keys);
+  return keys.length;
+};
 
 const seedUsers = async (): Promise<ApiUser[]> => {
   const existing = await kv.getByPrefix("user:");
@@ -472,6 +623,8 @@ const toMinutes = (time: string) => {
 
 const isValidTime = (time: string) => /^\d{2}:\d{2}$/.test(time);
 const isValidDate = (value: string) => /^\d{4}-\d{2}-\d{2}$/.test(value);
+const isValidCurrencyAmount = (value: number) =>
+  Number.isFinite(value) && value >= 0 && Math.abs(value * 100 - Math.round(value * 100)) < 1e-8;
 const isValidBookingType = (value: string) => ["open_play", "private", "training"].includes(value);
 
 const mergeDateTime = (date: string, time: string) => new Date(`${date}T${time}:00`);
@@ -889,13 +1042,43 @@ app.post(`${API_BASE}/auth/login`, async (c) => {
   if (loginRateErr) return loginRateErr;
   const body = await c.req.json().catch(() => ({}));
   const email = String(body?.email || "").trim().toLowerCase();
-  const expectedRole = String(body?.expectedRole || "").trim() as Role;
+  const expectedRoleRaw = String(body?.expectedRole || "").trim().toLowerCase();
+  if (expectedRoleRaw && !isRole(expectedRoleRaw)) {
+    return jsonErr(c, 400, "VALIDATION_ERROR", "Invalid expectedRole.");
+  }
+  const expectedRole = (expectedRoleRaw || "") as Role | "";
   const users = (await kv.getByPrefix("user:")) as ApiUser[];
   const user = users.find((u) => u.email.toLowerCase() === email);
-  if (!user) return jsonErr(c, 401, "UNAUTHENTICATED", "Invalid credentials.");
+  if (!user) {
+    await writeAuditLog({
+      action: "auth_login_failed",
+      entityType: "auth",
+      entityId: email || "unknown",
+      actorId: "anonymous",
+      actorRole: "player",
+      metadata: { reason: "invalid_credentials", email, requestId: requestIdFromContext(c) },
+    });
+    return jsonErr(c, 401, "UNAUTHENTICATED", "Invalid credentials.");
+  }
   if (expectedRole && user.role !== expectedRole) {
+    await writeAuditLog({
+      action: "auth_login_failed",
+      entityType: "auth",
+      entityId: user.id,
+      actorId: user.id,
+      actorRole: user.role,
+      metadata: { reason: "role_mismatch", expectedRole, requestId: requestIdFromContext(c) },
+    });
     return jsonErr(c, 403, "ROLE_MISMATCH", `This account is not a ${expectedRole} account.`);
   }
+  await writeAuditLog({
+    action: "auth_login_succeeded",
+    entityType: "auth",
+    entityId: user.id,
+    actorId: user.id,
+    actorRole: user.role,
+    metadata: { expectedRole: expectedRole || null, requestId: requestIdFromContext(c) },
+  });
   return jsonOk(c, {
     accessToken: `mock-access-${user.id}`,
     refreshToken: `mock-refresh-${user.id}`,
@@ -915,13 +1098,36 @@ app.post(`${API_BASE}/auth/signup`, async (c) => {
   if (signupRateErr) return signupRateErr;
   const body = await c.req.json().catch(() => ({}));
   const email = String(body?.email || "").trim().toLowerCase();
-  const role = (String(body?.role || "player").trim() || "player") as Role;
+  const roleRaw = String(body?.role || "player").trim().toLowerCase() || "player";
   if (!email) return jsonErr(c, 400, "VALIDATION_ERROR", "Email is required.");
-  if (!["admin", "staff", "coach", "player"].includes(role)) {
+  if (!isValidEmail(email)) {
+    return jsonErr(c, 400, "VALIDATION_ERROR", "Email must be a valid address.");
+  }
+  if (!isRole(roleRaw)) {
     return jsonErr(c, 400, "VALIDATION_ERROR", "Invalid role.");
+  }
+  const role = roleRaw as Role;
+  if ((role === "admin" || role === "staff") && !allowPrivilegedSignup()) {
+    await writeAuditLog({
+      action: "auth_signup_failed",
+      entityType: "auth",
+      entityId: email || "unknown",
+      actorId: "anonymous",
+      actorRole: "player",
+      metadata: { reason: "privileged_role_forbidden", role, email, requestId: requestIdFromContext(c) },
+    });
+    return jsonErr(c, 403, "FORBIDDEN", "Public signup cannot create admin or staff accounts.");
   }
   const users = (await kv.getByPrefix("user:")) as ApiUser[];
   if (users.some((u) => u.email.toLowerCase() === email)) {
+    await writeAuditLog({
+      action: "auth_signup_failed",
+      entityType: "auth",
+      entityId: email,
+      actorId: "anonymous",
+      actorRole: "player",
+      metadata: { reason: "email_exists", email, role, requestId: requestIdFromContext(c) },
+    });
     return jsonErr(c, 409, "CONFLICT", "Email already exists.");
   }
   const newUser: ApiUser = {
@@ -932,7 +1138,54 @@ app.post(`${API_BASE}/auth/signup`, async (c) => {
     createdAt: nowIso(),
   };
   await kv.set(`user:${newUser.id}`, newUser);
+  await writeAuditLog({
+    action: "auth_signup_succeeded",
+    entityType: "auth",
+    entityId: newUser.id,
+    actorId: newUser.id,
+    actorRole: newUser.role,
+    metadata: { email: newUser.email, requestId: requestIdFromContext(c) },
+  });
   return jsonOk(c, newUser);
+});
+
+app.post(`${API_BASE}/auth/reset-password`, async (c) => {
+  await seedUsers();
+  const resetLimit = rateLimitConfig("auth_reset_password", { max: 6, windowSeconds: 60 });
+  const resetRateErr = await enforceRateLimit(c, {
+    scope: "auth_reset_password",
+    key: requestClientKey(c),
+    max: resetLimit.max,
+    windowSeconds: resetLimit.windowSeconds,
+  });
+  if (resetRateErr) return resetRateErr;
+
+  const body = await c.req.json().catch(() => ({}));
+  const email = String(body?.email || "").trim().toLowerCase();
+  if (!email) return jsonErr(c, 400, "VALIDATION_ERROR", "Email is required.");
+  if (!isValidEmail(email)) {
+    return jsonErr(c, 400, "VALIDATION_ERROR", "Email must be a valid address.");
+  }
+
+  const users = (await kv.getByPrefix("user:")) as ApiUser[];
+  const user = users.find((u) => u.email.toLowerCase() === email) || null;
+  await writeAuditLog({
+    action: "auth_password_reset_requested",
+    entityType: "auth",
+    entityId: user?.id || email,
+    actorId: user?.id || "anonymous",
+    actorRole: user?.role || "player",
+    metadata: {
+      email,
+      userExists: Boolean(user),
+      requestId: requestIdFromContext(c),
+    },
+  });
+
+  return jsonOk(c, {
+    sent: true,
+    message: "If an account with this email exists, reset instructions have been sent.",
+  });
 });
 
 app.post(`${API_BASE}/auth/oauth/start`, async (c) => {
@@ -945,16 +1198,88 @@ app.post(`${API_BASE}/auth/oauth/start`, async (c) => {
   });
   if (oauthRateErr) return oauthRateErr;
   const body = await c.req.json().catch(() => ({}));
-  const provider = String(body?.provider || "google");
-  const expectedRole = String(body?.expectedRole || "player");
+  const provider = String(body?.provider || "google").trim().toLowerCase();
+  const expectedRole = String(body?.expectedRole || "player").trim().toLowerCase();
+  const redirectUri = String(body?.redirectUri || "").trim();
+  if (!isOAuthProvider(provider)) {
+    return jsonErr(c, 400, "VALIDATION_ERROR", `Invalid provider. Allowed: ${OAUTH_PROVIDERS.join(", ")}.`);
+  }
+  if (!isRole(expectedRole)) {
+    return jsonErr(c, 400, "VALIDATION_ERROR", "Invalid expectedRole.");
+  }
+  if (redirectUri) {
+    try {
+      const parsed = new URL(redirectUri);
+      if (!["http:", "https:"].includes(parsed.protocol)) {
+        return jsonErr(c, 400, "VALIDATION_ERROR", "redirectUri must use http or https.");
+      }
+    } catch {
+      return jsonErr(c, 400, "VALIDATION_ERROR", "redirectUri must be a valid absolute URL.");
+    }
+  }
+
+  await seedUsers();
+  const users = (await kv.getByPrefix("user:")) as ApiUser[];
+  const defaultEmailByRole: Record<Role, string> = {
+    admin: "admin@court.com",
+    staff: "staff@court.com",
+    coach: "coach@court.com",
+    player: "player@court.com",
+  };
+  const targetEmail = defaultEmailByRole[expectedRole as Role];
+  const targetUser = users.find((u) => u.email.toLowerCase() === targetEmail.toLowerCase());
+  if (!targetUser) {
+    return jsonErr(c, 404, "NOT_FOUND", "No account is available for this OAuth role.");
+  }
+
+  const oauthRedirectBase = redirectUri || `https://example.com/oauth/${provider}`;
+  let oauthRedirectUrl = oauthRedirectBase;
+  try {
+    const parsed = new URL(oauthRedirectBase);
+    parsed.searchParams.set("oauth", "1");
+    parsed.searchParams.set("provider", provider);
+    parsed.searchParams.set("role", expectedRole);
+    parsed.searchParams.set("email", targetUser.email);
+    oauthRedirectUrl = parsed.toString();
+  } catch {
+    const sep = oauthRedirectBase.includes("?") ? "&" : "?";
+    oauthRedirectUrl = `${oauthRedirectBase}${sep}oauth=1&provider=${encodeURIComponent(provider)}&role=${encodeURIComponent(
+      expectedRole,
+    )}&email=${encodeURIComponent(targetUser.email)}`;
+  }
+
+  await writeAuditLog({
+    action: "auth_oauth_start",
+    entityType: "auth",
+    entityId: provider,
+    actorId: "anonymous",
+    actorRole: expectedRole,
+    metadata: {
+      provider,
+      expectedRole,
+      redirectUri: redirectUri || null,
+      targetEmail: targetUser.email,
+      requestId: requestIdFromContext(c),
+    },
+  });
   return jsonOk(c, {
     provider,
     expectedRole,
-    redirectUrl: `https://example.com/oauth/${provider}?state=${encodeURIComponent(expectedRole)}`,
+    redirectUrl: oauthRedirectUrl,
   });
 });
 
-app.post(`${API_BASE}/auth/logout`, async (c) => jsonOk(c, { loggedOut: true }));
+app.post(`${API_BASE}/auth/logout`, async (c) => {
+  await writeAuditLog({
+    action: "auth_logout",
+    entityType: "auth",
+    entityId: "logout",
+    actorId: "anonymous",
+    actorRole: "player",
+    metadata: { requestId: requestIdFromContext(c) },
+  });
+  return jsonOk(c, { loggedOut: true });
+});
 
 // Users / Profile
 app.get(`${API_BASE}/users/me`, async (c) => {
@@ -976,6 +1301,34 @@ app.patch(`${API_BASE}/users/me`, async (c) => {
   };
   await kv.set(`user:${result.user.id}`, updated);
   return jsonOk(c, updated);
+});
+
+app.get(`${API_BASE}/config/facility`, async (c) => {
+  const config = await getFacilityConfig();
+  return jsonOk(c, config);
+});
+
+app.patch(`${API_BASE}/config/facility`, async (c) => {
+  const result = await requireRole(c, ["admin", "staff"]);
+  if ("err" in result) return result.err;
+  const body = await c.req.json().catch(() => ({}));
+  const existing = await getFacilityConfig();
+  const merged = normalizeFacilityConfig({
+    ...existing,
+    ...(body && typeof body === "object" ? body : {}),
+  });
+  const validationError = validateFacilityConfig(merged);
+  if (validationError) return jsonErr(c, 400, "VALIDATION_ERROR", validationError);
+  await kv.set("facility:config", merged);
+  await writeAuditLog({
+    action: "facility_config_updated",
+    entityType: "facility_config",
+    entityId: "default",
+    actorId: result.user.id,
+    actorRole: result.role,
+    metadata: { keys: Object.keys(body || {}) },
+  });
+  return jsonOk(c, merged);
 });
 
 app.patch(`${API_BASE}/coach/profile`, async (c) => {
@@ -1608,6 +1961,8 @@ app.post(`${API_BASE}/bookings`, async (c) => {
   const endTime = String(body?.endTime || "");
   const duration = Number(body?.duration || 0);
   const type = String(body?.type || "private");
+  const amount = Number(body?.amount ?? 0);
+  const coachId = typeof body?.coachId === "string" ? body.coachId.trim() : "";
   const idemKey = String(c.req.header("x-idempotency-key") || "").trim() || undefined;
 
   if (!courtId || !date || !startTime || !endTime || !duration) {
@@ -1622,11 +1977,17 @@ app.post(`${API_BASE}/bookings`, async (c) => {
   if (!isValidBookingType(type)) {
     return jsonErr(c, 400, "VALIDATION_ERROR", "Invalid booking type.");
   }
+  if (type === "training" && !coachId) {
+    return jsonErr(c, 400, "VALIDATION_ERROR", "coachId is required for training bookings.");
+  }
   if (duration <= 0) {
     return jsonErr(c, 400, "VALIDATION_ERROR", "Duration must be a positive number.");
   }
   if (duration !== minutesBetween(startTime, endTime)) {
     return jsonErr(c, 400, "VALIDATION_ERROR", "Duration must match startTime and endTime.");
+  }
+  if (!isValidCurrencyAmount(amount)) {
+    return jsonErr(c, 400, "VALIDATION_ERROR", "amount must be a non-negative number with up to 2 decimal places.");
   }
   const replay = await maybeReplayIdempotency(
     c,
@@ -1640,16 +2001,22 @@ app.post(`${API_BASE}/bookings`, async (c) => {
       endTime,
       duration,
       type,
-      coachId: body?.coachId || null,
+      coachId: coachId || null,
       notes: body?.notes || null,
-      amount: Number(body?.amount || 0),
-      paymentStatus: body?.paymentStatus || "unpaid",
+      amount,
     }),
   );
   if (replay) return replay;
 
   const court = (await kv.get(`court:${courtId}`)) as ApiCourt | null;
   if (!court) return jsonErr(c, 404, "NOT_FOUND", "Court not found.");
+  if (coachId) {
+    const coach = (await kv.get(`user:${coachId}`)) as ApiUser | null;
+    if (!coach) return jsonErr(c, 404, "NOT_FOUND", "Coach not found.");
+    if (coach.role !== "coach") {
+      return jsonErr(c, 400, "VALIDATION_ERROR", "coachId must reference a coach account.");
+    }
+  }
   if (!isWithinOperatingHours(startTime, endTime, court.operatingHours)) {
     return jsonErr(c, 409, "CONFLICT", "Booking time is outside court operating hours.");
   }
@@ -1671,11 +2038,11 @@ app.post(`${API_BASE}/bookings`, async (c) => {
     endTime,
     duration,
     status: "pending",
-    paymentStatus: body?.paymentStatus || "unpaid",
-    amount: Number(body?.amount || 0),
-    players: body?.players || [],
-    maxPlayers: body?.maxPlayers || 4,
-    coachId: body?.coachId,
+    paymentStatus: "unpaid",
+    amount,
+    players: [],
+    maxPlayers: 4,
+    coachId: coachId || undefined,
     notes: body?.notes,
     checkedIn: false,
     receiptToken: id(),
@@ -1716,10 +2083,9 @@ app.post(`${API_BASE}/bookings`, async (c) => {
         endTime,
         duration,
         type,
-        coachId: body?.coachId || null,
+        coachId: coachId || null,
         notes: body?.notes || null,
-        amount: Number(body?.amount || 0),
-        paymentStatus: body?.paymentStatus || "unpaid",
+        amount,
       }),
       response,
       status: 200,
@@ -3101,7 +3467,9 @@ app.post(`${API_BASE}/bookings/:id/complete`, async (c) => {
   const canComplete =
     result.role === "admin" ||
     result.role === "staff" ||
-    (result.role === "coach" && existing.type === "training" && existing.userId === result.user.id);
+    (result.role === "coach" &&
+      existing.type === "training" &&
+      (existing.userId === result.user.id || existing.coachId === result.user.id));
   if (!canComplete) return jsonErr(c, 403, "FORBIDDEN", "Cannot complete this booking.");
   if (existing.status !== "confirmed") {
     return jsonErr(c, 409, "CONFLICT", "Only confirmed bookings can be completed.");
@@ -3509,6 +3877,7 @@ app.post(`${API_BASE}/coach/sessions`, async (c) => {
   const endTime = String(body?.endTime || "11:00");
   const duration = Number(body?.duration || 60);
   const maxPlayers = Number(body?.maxPlayers || 4);
+  const amount = Number(body?.amount ?? 0);
   const requestedSport = String(body?.sport || "").trim();
   const autoEnrollApproved = body?.autoEnrollApproved !== false;
 
@@ -3524,6 +3893,9 @@ app.post(`${API_BASE}/coach/sessions`, async (c) => {
   }
   if (duration !== minutesBetween(startTime, endTime)) {
     return jsonErr(c, 400, "VALIDATION_ERROR", "Duration must match startTime and endTime.");
+  }
+  if (!isValidCurrencyAmount(amount)) {
+    return jsonErr(c, 400, "VALIDATION_ERROR", "amount must be a non-negative number with up to 2 decimal places.");
   }
 
   const court = (await kv.get(`court:${courtId}`)) as ApiCourt | null;
@@ -3570,7 +3942,7 @@ app.post(`${API_BASE}/coach/sessions`, async (c) => {
     duration,
     status: "confirmed",
     paymentStatus: "paid",
-    amount: Number(body?.amount || 0),
+    amount,
     maxPlayers,
     players,
     sport: sessionSport,
@@ -3592,6 +3964,40 @@ app.patch(`${API_BASE}/coach/sessions/:id`, async (c) => {
   if (!existing) return jsonErr(c, 404, "NOT_FOUND", "Session not found.");
   if (existing.userId !== result.user.id) return jsonErr(c, 403, "FORBIDDEN", "Not your session.");
   const patch = await c.req.json().catch(() => ({}));
+
+  const blockedFields = [
+    "id",
+    "userId",
+    "type",
+    "status",
+    "paymentStatus",
+    "players",
+    "attendance",
+    "checkedIn",
+    "checkedInAt",
+    "createdAt",
+    "updatedAt",
+    "receiptToken",
+    "rejectionReason",
+    "paymentDueAt",
+    "coachId",
+  ];
+  const attemptedBlocked = blockedFields.find((field) => field in patch);
+  if (attemptedBlocked) {
+    return jsonErr(
+      c,
+      400,
+      "VALIDATION_ERROR",
+      `Field "${attemptedBlocked}" cannot be updated via PATCH /coach/sessions/:id.`,
+    );
+  }
+
+  const allowedFields = new Set(["courtId", "date", "startTime", "endTime", "duration", "maxPlayers", "sport", "notes", "amount"]);
+  const invalidField = Object.keys(patch).find((key) => !allowedFields.has(key));
+  if (invalidField) {
+    return jsonErr(c, 400, "VALIDATION_ERROR", `Field "${invalidField}" cannot be updated via PATCH /coach/sessions/:id.`);
+  }
+
   const updated = withBookingUpdate(existing, patch as Partial<ApiBooking>);
   if (!isValidDate(updated.date) || !isValidTime(updated.startTime) || !isValidTime(updated.endTime)) {
     return jsonErr(c, 400, "VALIDATION_ERROR", "Invalid date or time format.");
@@ -3605,8 +4011,17 @@ app.patch(`${API_BASE}/coach/sessions/:id`, async (c) => {
   if (Number(updated.duration) !== minutesBetween(updated.startTime, updated.endTime)) {
     return jsonErr(c, 400, "VALIDATION_ERROR", "Duration must match startTime and endTime.");
   }
+  if (!Number.isFinite(Number(updated.maxPlayers ?? 0)) || Number(updated.maxPlayers) <= 0) {
+    return jsonErr(c, 400, "VALIDATION_ERROR", "maxPlayers must be a positive number.");
+  }
   if (updated.type !== "training") {
     return jsonErr(c, 409, "CONFLICT", "Coach sessions must remain training type.");
+  }
+  if ((updated.players || []).length > Number(updated.maxPlayers || 0)) {
+    return jsonErr(c, 409, "CONFLICT", "maxPlayers cannot be less than currently enrolled players.");
+  }
+  if (!isValidCurrencyAmount(Number(updated.amount ?? 0))) {
+    return jsonErr(c, 400, "VALIDATION_ERROR", "amount must be a non-negative number with up to 2 decimal places.");
   }
   const court = (await kv.get(`court:${updated.courtId}`)) as ApiCourt | null;
   if (!court) return jsonErr(c, 404, "NOT_FOUND", "Court not found.");
@@ -3960,19 +4375,45 @@ app.get(`${API_BASE}/analytics/bookings`, async (c) => {
   if ("err" in result) return result.err;
   const startDate = c.req.query("startDate");
   const endDate = c.req.query("endDate");
+  const courtId = String(c.req.query("courtId") || "").trim();
+  const status = String(c.req.query("status") || "").trim();
+  const type = String(c.req.query("type") || "").trim();
   if (startDate && !isValidDate(startDate)) return jsonErr(c, 400, "VALIDATION_ERROR", "startDate must be YYYY-MM-DD.");
   if (endDate && !isValidDate(endDate)) return jsonErr(c, 400, "VALIDATION_ERROR", "endDate must be YYYY-MM-DD.");
   if (startDate && endDate && startDate > endDate) {
     return jsonErr(c, 400, "VALIDATION_ERROR", "startDate cannot be later than endDate.");
   }
+  if (status && !["pending", "confirmed", "cancelled", "completed", "no_show"].includes(status)) {
+    return jsonErr(c, 400, "VALIDATION_ERROR", "status must be pending, confirmed, cancelled, completed, or no_show.");
+  }
+  if (type && !["open_play", "private", "training"].includes(type)) {
+    return jsonErr(c, 400, "VALIDATION_ERROR", "type must be open_play, private, or training.");
+  }
+  if (courtId) {
+    const court = (await kv.get(`court:${courtId}`)) as ApiCourt | null;
+    if (!court) return jsonErr(c, 404, "NOT_FOUND", "Court not found.");
+  }
   let all = (await kv.getByPrefix("booking:")) as ApiBooking[];
   if (startDate) all = all.filter((b) => b.date >= startDate);
   if (endDate) all = all.filter((b) => b.date <= endDate);
+  if (courtId) all = all.filter((b) => b.courtId === courtId);
+  if (status) all = all.filter((b) => b.status === status);
+  if (type) all = all.filter((b) => b.type === type);
+  const totalBookings = all.length;
+  const completedBookings = all.filter((b) => b.status === "completed").length;
+  const cancelledBookings = all.filter((b) => b.status === "cancelled").length;
+  const noShows = all.filter((b) => b.status === "no_show").length;
+  const totalRevenue = all.filter((b) => b.status !== "cancelled").reduce((sum, b) => sum + Number(b.amount || 0), 0);
+  const noShowRate = totalBookings > 0 ? (noShows / totalBookings) * 100 : 0;
+  const averageBookingValue = totalBookings > 0 ? totalRevenue / totalBookings : 0;
   return jsonOk(c, {
-    totalBookings: all.length,
-    completedBookings: all.filter((b) => b.status === "completed").length,
-    cancelledBookings: all.filter((b) => b.status === "cancelled").length,
-    totalRevenue: all.filter((b) => b.status !== "cancelled").reduce((sum, b) => sum + Number(b.amount || 0), 0),
+    totalBookings,
+    completedBookings,
+    cancelledBookings,
+    noShows,
+    noShowRate,
+    totalRevenue,
+    averageBookingValue,
   });
 });
 
@@ -3994,10 +4435,26 @@ app.get(`${API_BASE}/analytics/courts/:courtId/utilization`, async (c) => {
   if (endDate) bookings = bookings.filter((b) => b.date <= endDate);
   const courtBookings = bookings.filter((b) => b.courtId === courtId && b.status !== "cancelled");
   const bookedMinutes = courtBookings.reduce((sum, b) => sum + Number(b.duration || 0), 0);
+  const openMinutes = Math.max(0, toMinutes(court.operatingHours.end) - toMinutes(court.operatingHours.start));
+  let daysCount = 1;
+  if (startDate && endDate) {
+    const startMs = new Date(`${startDate}T00:00:00Z`).getTime();
+    const endMs = new Date(`${endDate}T00:00:00Z`).getTime();
+    if (!Number.isNaN(startMs) && !Number.isNaN(endMs) && endMs >= startMs) {
+      daysCount = Math.max(1, Math.floor((endMs - startMs) / (24 * 60 * 60 * 1000)) + 1);
+    }
+  } else {
+    const activeDates = new Set(courtBookings.map((b) => b.date));
+    daysCount = Math.max(1, activeDates.size);
+  }
+  const totalAvailableMinutes = openMinutes * daysCount;
+  const utilizationRate = totalAvailableMinutes > 0 ? (bookedMinutes / totalAvailableMinutes) * 100 : 0;
   return jsonOk(c, {
     courtId,
     sessions: courtBookings.length,
     hoursBooked: Math.round((bookedMinutes / 60) * 100) / 100,
+    hoursAvailable: Math.round((totalAvailableMinutes / 60) * 100) / 100,
+    utilizationRate,
   });
 });
 
@@ -4185,6 +4642,12 @@ app.get(`${API_BASE}/analytics/bookings/export`, async (c) => {
   if (startDate && !isValidDate(startDate)) return jsonErr(c, 400, "VALIDATION_ERROR", "startDate must be YYYY-MM-DD.");
   if (endDate && !isValidDate(endDate)) return jsonErr(c, 400, "VALIDATION_ERROR", "endDate must be YYYY-MM-DD.");
   if (startDate && endDate && startDate > endDate) return jsonErr(c, 400, "VALIDATION_ERROR", "startDate cannot be later than endDate.");
+  if (status && !["pending", "confirmed", "cancelled", "completed", "no_show"].includes(status)) {
+    return jsonErr(c, 400, "VALIDATION_ERROR", "status must be pending, confirmed, cancelled, completed, or no_show.");
+  }
+  if (type && !["open_play", "private", "training"].includes(type)) {
+    return jsonErr(c, 400, "VALIDATION_ERROR", "type must be open_play, private, or training.");
+  }
 
   let bookings = (await kv.getByPrefix("booking:")) as ApiBooking[];
   if (startDate) bookings = bookings.filter((b) => b.date >= startDate);
@@ -4394,6 +4857,168 @@ app.get(`${API_BASE}/admin/audit-logs/export`, async (c) => {
   });
 });
 
+app.get(`${API_BASE}/admin/data/export`, async (c) => {
+  const result = await requireRole(c, ["admin", "staff"]);
+  if ("err" in result) return result.err;
+  await seedUsers();
+  await seedCourts();
+  await seedPlans();
+  const config = await getFacilityConfig();
+  const snapshot: AdminDataSnapshot = {
+    users: (await kv.getByPrefix("user:")) as ApiUser[],
+    courts: (await kv.getByPrefix("court:")) as ApiCourt[],
+    bookings: (await kv.getByPrefix("booking:")) as ApiBooking[],
+    memberships: (await kv.getByPrefix("plan:")) as any[],
+    subscriptions: (await kv.getByPrefix("subscription:")) as ApiSubscription[],
+    notifications: (await kv.getByPrefix("notification:")) as ApiNotification[],
+    coachApplications: (await kv.getByPrefix("coachapp:")) as ApiCoachApplication[],
+    config,
+  };
+  return jsonOk(c, {
+    filename: `ventra-backup-${nowIso().slice(0, 10)}.json`,
+    generatedAt: nowIso(),
+    data: snapshot,
+  });
+});
+
+app.post(`${API_BASE}/admin/data/import`, async (c) => {
+  const result = await requireRole(c, ["admin"]);
+  if ("err" in result) return result.err;
+  const body = await c.req.json().catch(() => ({}));
+  const overwrite = body?.overwrite !== false;
+  const data = (body?.data || {}) as Partial<AdminDataSnapshot>;
+  if (!overwrite) {
+    return jsonErr(c, 400, "VALIDATION_ERROR", "Only overwrite=true is currently supported.");
+  }
+  if (!data || typeof data !== "object") {
+    return jsonErr(c, 400, "VALIDATION_ERROR", "data payload is required.");
+  }
+
+  const users = Array.isArray(data.users) ? (data.users as ApiUser[]) : [];
+  const courts = Array.isArray(data.courts) ? (data.courts as ApiCourt[]) : [];
+  const bookings = Array.isArray(data.bookings) ? (data.bookings as ApiBooking[]) : [];
+  const memberships = Array.isArray(data.memberships) ? data.memberships : [];
+  const subscriptions = Array.isArray(data.subscriptions) ? (data.subscriptions as ApiSubscription[]) : [];
+  const notifications = Array.isArray(data.notifications) ? (data.notifications as ApiNotification[]) : [];
+  const coachApplications = Array.isArray(data.coachApplications)
+    ? (data.coachApplications as ApiCoachApplication[])
+    : [];
+  const config = normalizeFacilityConfig(data.config || DEFAULT_FACILITY_CONFIG);
+  const configValidation = validateFacilityConfig(config);
+  if (configValidation) return jsonErr(c, 400, "VALIDATION_ERROR", configValidation);
+
+  const existingUsers = (await kv.getByPrefix("user:")) as ApiUser[];
+  const existingCourts = (await kv.getByPrefix("court:")) as ApiCourt[];
+  const existingBookings = (await kv.getByPrefix("booking:")) as ApiBooking[];
+  const existingMemberships = (await kv.getByPrefix("plan:")) as any[];
+  const existingSubscriptions = (await kv.getByPrefix("subscription:")) as ApiSubscription[];
+  const existingNotifications = (await kv.getByPrefix("notification:")) as ApiNotification[];
+  const existingCoachApplications = (await kv.getByPrefix("coachapp:")) as ApiCoachApplication[];
+  const existingAudits = (await kv.getByPrefix("audit:")) as ApiAuditLog[];
+  const existingHolds = (await kv.getByPrefix("booking_hold:")) as ApiBookingHold[];
+  const existingPaymentTx = (await kv.getByPrefix("payment_tx:")) as ApiPaymentTransaction[];
+
+  await deleteByPrefixRecords("user", existingUsers);
+  await deleteByPrefixRecords("court", existingCourts);
+  await deleteByPrefixRecords("booking", existingBookings);
+  await deleteByPrefixRecords("plan", existingMemberships);
+  await deleteByPrefixRecords("subscription", existingSubscriptions);
+  await deleteByPrefixRecords("notification", existingNotifications);
+  await deleteByPrefixRecords("coachapp", existingCoachApplications);
+  await deleteByPrefixRecords("audit", existingAudits);
+  await deleteByPrefixRecords("booking_hold", existingHolds);
+  await deleteByPrefixRecords("payment_tx", existingPaymentTx);
+
+  if (users.length) await kv.mset(users.map((u) => `user:${u.id}`), users);
+  if (courts.length) await kv.mset(courts.map((ct) => `court:${ct.id}`), courts);
+  if (bookings.length) await kv.mset(bookings.map((b) => `booking:${b.id}`), bookings);
+  if (memberships.length) await kv.mset(memberships.map((p: any) => `plan:${p.id}`), memberships);
+  if (subscriptions.length) await kv.mset(subscriptions.map((s) => `subscription:${s.id}`), subscriptions);
+  if (notifications.length) await kv.mset(notifications.map((n) => `notification:${n.id}`), notifications);
+  if (coachApplications.length) {
+    await kv.mset(
+      coachApplications.map((app) => `coachapp:${app.id}`),
+      coachApplications,
+    );
+  }
+  await kv.set("facility:config", config);
+
+  await writeAuditLog({
+    action: "admin_data_imported",
+    entityType: "system_data",
+    entityId: "snapshot",
+    actorId: result.user.id,
+    actorRole: result.role,
+    metadata: {
+      users: users.length,
+      courts: courts.length,
+      bookings: bookings.length,
+      memberships: memberships.length,
+      subscriptions: subscriptions.length,
+      notifications: notifications.length,
+      coachApplications: coachApplications.length,
+    },
+  });
+
+  return jsonOk(c, {
+    imported: {
+      users: users.length,
+      courts: courts.length,
+      bookings: bookings.length,
+      memberships: memberships.length,
+      subscriptions: subscriptions.length,
+      notifications: notifications.length,
+      coachApplications: coachApplications.length,
+    },
+  });
+});
+
+app.post(`${API_BASE}/admin/data/reset`, async (c) => {
+  const result = await requireRole(c, ["admin"]);
+  if ("err" in result) return result.err;
+
+  const users = (await kv.getByPrefix("user:")) as ApiUser[];
+  const courts = (await kv.getByPrefix("court:")) as ApiCourt[];
+  const bookings = (await kv.getByPrefix("booking:")) as ApiBooking[];
+  const plans = (await kv.getByPrefix("plan:")) as any[];
+  const subscriptions = (await kv.getByPrefix("subscription:")) as ApiSubscription[];
+  const notifications = (await kv.getByPrefix("notification:")) as ApiNotification[];
+  const coachApplications = (await kv.getByPrefix("coachapp:")) as ApiCoachApplication[];
+  const audits = (await kv.getByPrefix("audit:")) as ApiAuditLog[];
+  const holds = (await kv.getByPrefix("booking_hold:")) as ApiBookingHold[];
+  const paymentTx = (await kv.getByPrefix("payment_tx:")) as ApiPaymentTransaction[];
+
+  const deleted = {
+    users: await deleteByPrefixRecords("user", users),
+    courts: await deleteByPrefixRecords("court", courts),
+    bookings: await deleteByPrefixRecords("booking", bookings),
+    plans: await deleteByPrefixRecords("plan", plans),
+    subscriptions: await deleteByPrefixRecords("subscription", subscriptions),
+    notifications: await deleteByPrefixRecords("notification", notifications),
+    coachApplications: await deleteByPrefixRecords("coachapp", coachApplications),
+    audits: await deleteByPrefixRecords("audit", audits),
+    bookingHolds: await deleteByPrefixRecords("booking_hold", holds),
+    paymentTransactions: await deleteByPrefixRecords("payment_tx", paymentTx),
+  };
+  await kv.del("facility:config");
+
+  await seedUsers();
+  await seedCourts();
+  await seedPlans();
+  await kv.set("facility:config", { ...DEFAULT_FACILITY_CONFIG });
+
+  await writeAuditLog({
+    action: "admin_data_reset",
+    entityType: "system_data",
+    entityId: "reset",
+    actorId: result.user.id,
+    actorRole: result.role,
+    metadata: { deleted },
+  });
+
+  return jsonOk(c, { reset: true, deleted });
+});
+
 app.post(`${API_BASE}/admin/audit-logs/purge`, async (c) => {
   const result = await requireRole(c, ["admin"]);
   if ("err" in result) return result.err;
@@ -4420,6 +5045,18 @@ app.post(`${API_BASE}/admin/audit-logs/purge`, async (c) => {
 });
 
 app.get(`${API_BASE}/health`, (c) => jsonOk(c, { status: "ok" }));
+
+app.notFound((c) => jsonErr(c, 404, "NOT_FOUND", "Route not found."));
+
+app.onError((err, c) => {
+  console.error("Unhandled API error", {
+    requestId: requestIdFromContext(c),
+    method: c.req.method,
+    path: c.req.path,
+    error: err instanceof Error ? err.message : String(err),
+  });
+  return jsonErr(c, 500, "INTERNAL_ERROR", "An unexpected error occurred.");
+});
 
 if (import.meta.main) {
   Deno.serve(app.fetch);

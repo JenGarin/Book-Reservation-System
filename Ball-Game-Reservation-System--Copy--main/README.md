@@ -50,6 +50,12 @@ Frontend can run in API-backed mode (for requests, notifications, and subscripti
 - `VITE_USE_BACKEND_API=true`
 - `VITE_API_BASE_URL=<your-api-base-url>` (example: `http://localhost:54321/functions/v1/server/api/v1`)
 
+When API mode is enabled, the app now uses backend endpoints for:
+- login/signup/logout
+- loading users/courts/bookings/plans/notifications
+- create/update/approve/cancel/check-in booking flows
+- join session and mark-all-notifications-read
+
 For true multi-device shared bookings/data, enable backend API mode so all devices read/write the same data source.
 
 ## Backend Completion Notes
@@ -150,6 +156,21 @@ This project now includes a relational schema for users, courts, bookings, plans
 Use one of these:
 - `supabase_schema.sql` (run directly in Supabase SQL Editor)
 - `supabase/migrations/20260222_init_ventra_relational.sql` (for migration workflow)
+
+Then apply incremental migrations in order:
+1. `supabase/migrations/20260223_backend_operational_tables.sql`
+2. `supabase/migrations/20260302_rls_policies.sql`
+3. `supabase/migrations/20260302_app_users_privilege_guard.sql`
+4. `supabase/migrations/20260302_booking_integrity_constraints.sql`
+5. `supabase/migrations/20260302_booking_overlap_exclusion.sql`
+6. `supabase/migrations/20260302_booking_holds_guard.sql`
+
+These migrations add:
+- RLS policies for core + operational tables
+- self-privilege escalation guards for `app_users`
+- DB constraints for booking time/duration consistency
+- exclusion-based overlap protection for active bookings
+- hold conflict/expiry validation trigger
 
 After running schema SQL, your DB will include seeded records:
 - Users: `admin-1`, `staff-1`, `coach-1`, `player-1`

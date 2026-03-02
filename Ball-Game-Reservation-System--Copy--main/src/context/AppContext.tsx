@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, ReactNode, useEffect } from 'react';
+import React, { createContext, useContext, useState, ReactNode, useEffect, useCallback } from 'react';
 import {
   User,
   Court,
@@ -12,6 +12,7 @@ import {
 } from '@/types';
 import { addDays, format, isSameDay, parseISO } from 'date-fns';
 import { supabase } from './supabase';
+import { backendApi } from './backendApi';
 
 export interface UserSubscription {
   id: string;
@@ -53,10 +54,10 @@ interface AppContextType {
   confirmBooking: (id: string) => Promise<void>;
   updateBooking: (id: string, updates: Partial<Booking>) => Promise<void>;
   checkInBooking: (id: string) => Promise<void>;
-  getAvailableSlots: (courtId: string, date: Date, bookingType?: BookingType) => string[];
+  getAvailableSlots: (courtId: string, date: Date, bookingType?: BookingType) => Promise<string[]>;
   markStudentAttendance: (bookingId: string, studentId: string, attended: boolean) => Promise<void>;
-  getBookingAnalytics: (startDate: Date, endDate: Date) => BookingAnalytics;
-  getCourtUtilization: (courtId: string, startDate: Date, endDate: Date) => CourtUtilization[];
+  getBookingAnalytics: (startDate: Date, endDate: Date) => Promise<BookingAnalytics>;
+  getCourtUtilization: (courtId: string, startDate: Date, endDate: Date) => Promise<CourtUtilization[]>;
   updateConfig: (config: Partial<FacilityConfig>) => void;
   updateUser: (updates: Partial<User>) => void;
   adminUpdateUser: (id: string, updates: Partial<User>) => Promise<void>;
@@ -133,6 +134,7 @@ const defaultConfig: FacilityConfig = {
 };
 
 export function AppProvider({ children }: { children: ReactNode }) {
+  const usingBackendApi = backendApi.isEnabled;
   const [currentUser, setCurrentUser] = useState<User | null>(() => {
     try {
       const savedUser = localStorage.getItem('currentUser');
@@ -151,6 +153,64 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [userSubscription, setUserSubscription] = useState<UserSubscription | null>(null);
   const [subscriptionHistory, setSubscriptionHistory] = useState<UserSubscription[]>([]);
   const [notifications, setNotifications] = useState<Notification[]>([]);
+
+  const mapBackendSubscription = (subscription: any): UserSubscription => {
+    const membershipId = String(subscription?.planId || subscription?.membership_id || '');
+    const createdAt = String(subscription?.createdAt || subscription?.created_at || new Date().toISOString());
+    const status = String(subscription?.status || 'active');
+    const plan = memberships.find((m) => m.id === membershipId);
+    const start = new Date(createdAt);
+    const end = new Date(start);
+    if (plan?.interval === 'year') end.setFullYear(end.getFullYear() + 1);
+    else end.setMonth(end.getMonth() + 1);
+    if (status !== 'active' && subscription?.cancelledAt) {
+      return {
+        id: String(subscription?.id || ''),
+        user_id: String(subscription?.userId || subscription?.user_id || currentUser?.id || ''),
+        membership_id: membershipId,
+        status,
+        start_date: start.toISOString(),
+        end_date: new Date(subscription.cancelledAt).toISOString(),
+        amount_paid: Number(plan?.price || 0),
+        created_at: createdAt,
+      };
+    }
+    return {
+      id: String(subscription?.id || ''),
+      user_id: String(subscription?.userId || subscription?.user_id || currentUser?.id || ''),
+      membership_id: membershipId,
+      status,
+      start_date: start.toISOString(),
+      end_date: end.toISOString(),
+      amount_paid: Number(plan?.price || 0),
+      created_at: createdAt,
+    };
+  };
+
+  const hydrateBackendData = useCallback(
+    async (user: User) => {
+      if (!usingBackendApi) return;
+      try {
+        const [nextUsers, nextCourts, nextBookings, nextPlans, nextNotifications, nextConfig] = await Promise.all([
+          backendApi.getUsers(user.role),
+          backendApi.getCourts(),
+          backendApi.getBookings(),
+          backendApi.getPlans(),
+          backendApi.getNotifications(),
+          backendApi.getConfig(),
+        ]);
+        setUsers(nextUsers);
+        setCourts(nextCourts);
+        setBookings(nextBookings);
+        setMemberships(nextPlans);
+        setNotifications(nextNotifications);
+        setConfig(nextConfig);
+      } catch (error) {
+        console.error('Failed to hydrate backend data:', error);
+      }
+    },
+    [usingBackendApi]
+  );
 
   const upsertAndSetCurrentUser = (email: string, role: string = 'player') => {
     const existing = users.find((u) => u.email.toLowerCase() === email.toLowerCase());
@@ -181,7 +241,30 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     // Initialize Mock Database
-    const initData = () => {
+    const initData = async () => {
+      if (usingBackendApi) {
+        try {
+          const session = backendApi.getSession();
+          if (session?.user) {
+            setCurrentUser(session.user);
+            localStorage.setItem('currentUser', JSON.stringify(session.user));
+            await hydrateBackendData(session.user);
+          } else {
+            const [nextCourts, nextPlans, nextConfig] = await Promise.all([
+              backendApi.getCourts(),
+              backendApi.getPlans(),
+              backendApi.getConfig(),
+            ]);
+            setCourts(nextCourts);
+            setMemberships(nextPlans);
+            setConfig(nextConfig);
+          }
+        } catch (error) {
+          console.error('Backend API init failed, falling back to local mode for this session:', error);
+        }
+        return;
+      }
+
       // Users
       const storedUsers = localStorage.getItem(STORAGE_KEYS.USERS);
       if (storedUsers) {
@@ -237,9 +320,40 @@ export function AppProvider({ children }: { children: ReactNode }) {
     };
 
     initData();
-  }, []);
+  }, [hydrateBackendData, usingBackendApi]);
 
   useEffect(() => {
+    if (!usingBackendApi || !currentUser) return;
+    hydrateBackendData(currentUser);
+  }, [currentUser, hydrateBackendData, usingBackendApi]);
+
+  useEffect(() => {
+    if (!usingBackendApi) return;
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('oauth') !== '1') return;
+    const email = String(params.get('email') || '').trim().toLowerCase();
+    const roleRaw = String(params.get('role') || 'player').trim().toLowerCase();
+    const role = ['admin', 'staff', 'coach', 'player'].includes(roleRaw) ? (roleRaw as User['role']) : 'player';
+    if (!email) return;
+
+    backendApi
+      .login(email, '', role)
+      .then(async (user) => {
+        setCurrentUser(user);
+        localStorage.setItem('currentUser', JSON.stringify(user));
+        await hydrateBackendData(user);
+      })
+      .catch((error) => {
+        console.error('Backend OAuth callback login failed:', error);
+      })
+      .finally(() => {
+        const cleanUrl = `${window.location.origin}${window.location.pathname}`;
+        window.history.replaceState({}, '', cleanUrl);
+      });
+  }, [hydrateBackendData, usingBackendApi]);
+
+  useEffect(() => {
+    if (usingBackendApi) return;
     const bootstrapOauthSession = async () => {
       const { data } = await supabase.auth.getSession();
       const email = data.session?.user?.email;
@@ -263,10 +377,29 @@ export function AppProvider({ children }: { children: ReactNode }) {
     return () => {
       authListener.subscription.unsubscribe();
     };
-  }, [users]);
+  }, [users, usingBackendApi]);
 
   useEffect(() => {
     if (currentUser) {
+      if (usingBackendApi) {
+        backendApi
+          .getSubscriptionsMe()
+          .then((items) => {
+            const mapped = items
+              .map(mapBackendSubscription)
+              .sort((a, b) => new Date(b.created_at || '').getTime() - new Date(a.created_at || '').getTime());
+            setSubscriptionHistory(mapped);
+            const active = mapped.find((s) => s.status === 'active' && new Date(s.end_date) > new Date());
+            setUserSubscription(active || null);
+          })
+          .catch((error) => {
+            console.error('Failed to load subscriptions from backend:', error);
+            setSubscriptionHistory([]);
+            setUserSubscription(null);
+          });
+        return;
+      }
+
       const storedSubs = localStorage.getItem(STORAGE_KEYS.SUBSCRIPTIONS);
       if (storedSubs) {
         const allSubs: UserSubscription[] = JSON.parse(storedSubs);
@@ -279,7 +412,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       setUserSubscription(null);
       setSubscriptionHistory([]);
     }
-  }, [currentUser]);
+  }, [currentUser, memberships, usingBackendApi]);
 
   // Helper to save data
   const persist = (key: string, data: any) => {
@@ -291,6 +424,18 @@ export function AppProvider({ children }: { children: ReactNode }) {
     password: string,
     expectedRole?: User['role']
   ): Promise<{ success: boolean; message?: string }> => {
+    if (usingBackendApi) {
+      try {
+        const user = await backendApi.login(email, password, expectedRole);
+        setCurrentUser(user);
+        localStorage.setItem('currentUser', JSON.stringify(user));
+        await hydrateBackendData(user);
+        return { success: true };
+      } catch (error: any) {
+        return { success: false, message: error?.message || 'Login failed.' };
+      }
+    }
+
     await new Promise(resolve => setTimeout(resolve, 500)); // Simulate network delay
     const normalizedEmail = email.trim().toLowerCase();
 
@@ -378,6 +523,15 @@ export function AppProvider({ children }: { children: ReactNode }) {
     role: string = 'player',
     payload: SignupPayload = {}
   ): Promise<{ success: boolean; message?: string }> => {
+    if (usingBackendApi) {
+      try {
+        await backendApi.signup(email, password, role as User['role']);
+        return { success: true };
+      } catch (error: any) {
+        return { success: false, message: error?.message || 'Signup failed.' };
+      }
+    }
+
     try {
       await new Promise(resolve => setTimeout(resolve, 800));
       
@@ -417,6 +571,19 @@ export function AppProvider({ children }: { children: ReactNode }) {
   };
 
   const signInWithProvider = async (provider: 'google' | 'facebook', role: string = 'player'): Promise<{ success: boolean; message?: string }> => {
+    if (usingBackendApi) {
+      try {
+        const roleValue = ['admin', 'staff', 'coach', 'player'].includes(role) ? (role as User['role']) : 'player';
+        const response = await backendApi.oauthStart(provider, roleValue, `${window.location.origin}/sign-in`);
+        const redirectUrl = String(response?.redirectUrl || '').trim();
+        if (!redirectUrl) return { success: false, message: 'Missing OAuth redirect URL.' };
+        window.location.href = redirectUrl;
+        return { success: true };
+      } catch (error: any) {
+        return { success: false, message: error?.message || 'Social sign-in failed' };
+      }
+    }
+
     try {
       localStorage.setItem(STORAGE_KEYS.OAUTH_ROLE, role);
 
@@ -440,12 +607,21 @@ export function AppProvider({ children }: { children: ReactNode }) {
   };
 
   const logout = () => {
+    if (usingBackendApi) {
+      backendApi.logout().catch((error) => console.error('Backend logout failed:', error));
+    }
     setCurrentUser(null);
     localStorage.removeItem('currentUser');
     supabase.auth.signOut();
   };
 
   const addCourt = async (court: Omit<Court, 'id'>) => {
+    if (usingBackendApi) {
+      const created = await backendApi.addCourt(court);
+      setCourts((prev) => [...prev, created]);
+      return;
+    }
+
     const newCourt = { ...court, id: Math.random().toString(36).substr(2, 9) };
     const updatedCourts = [...courts, newCourt];
     setCourts(updatedCourts);
@@ -453,18 +629,37 @@ export function AppProvider({ children }: { children: ReactNode }) {
   };
 
   const updateCourt = async (id: string, updates: Partial<Court>) => {
+    if (usingBackendApi) {
+      const updated = await backendApi.updateCourt(id, updates);
+      setCourts((prev) => prev.map((c) => (c.id === id ? updated : c)));
+      return;
+    }
+
     const updatedCourts = courts.map((c) => (c.id === id ? { ...c, ...updates } : c));
     setCourts(updatedCourts);
     persist(STORAGE_KEYS.COURTS, updatedCourts);
   };
 
   const deleteCourt = async (id: string) => {
+    if (usingBackendApi) {
+      await backendApi.deleteCourt(id);
+      setCourts((prev) => prev.filter((c) => c.id !== id));
+      return;
+    }
+
     const updatedCourts = courts.filter((c) => c.id !== id);
     setCourts(updatedCourts);
     persist(STORAGE_KEYS.COURTS, updatedCourts);
   };
 
   const createBooking = async (booking: Omit<Booking, 'id' | 'createdAt'>): Promise<string> => {
+    if (usingBackendApi) {
+      const created = await backendApi.createBooking(booking);
+      setBookings((prev) => [...prev, created]);
+      if (currentUser) await hydrateBackendData(currentUser);
+      return created.id;
+    }
+
     await new Promise(resolve => setTimeout(resolve, 500));
     const bookingData = {
       ...booking,
@@ -519,6 +714,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
   };
 
   const cancelBooking = async (id: string) => {
+    if (usingBackendApi) {
+      const updated = await backendApi.cancelBooking(id);
+      setBookings((prev) => prev.map((b) => (b.id === id ? updated : b)));
+      if (currentUser) await hydrateBackendData(currentUser);
+      return;
+    }
+
     const booking = bookings.find((b) => b.id === id);
     const updatedBookings = bookings.map((b) => (b.id === id ? { ...b, status: 'cancelled' as const } : b));
     setBookings(updatedBookings);
@@ -558,6 +760,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
   };
 
   const confirmBooking = async (id: string) => {
+    if (usingBackendApi) {
+      const updated = await backendApi.confirmBooking(id);
+      setBookings((prev) => prev.map((b) => (b.id === id ? updated : b)));
+      if (currentUser) await hydrateBackendData(currentUser);
+      return;
+    }
+
     const booking = bookings.find((b) => b.id === id);
     if (!booking) return;
 
@@ -579,12 +788,24 @@ export function AppProvider({ children }: { children: ReactNode }) {
   };
 
   const updateBooking = async (id: string, updates: Partial<Booking>) => {
+    if (usingBackendApi) {
+      const updated = await backendApi.updateBooking(id, updates);
+      setBookings((prev) => prev.map((b) => (b.id === id ? updated : b)));
+      return;
+    }
+
     const updatedBookings = bookings.map((b) => (b.id === id ? { ...b, ...updates } : b));
     setBookings(updatedBookings);
     persist(STORAGE_KEYS.BOOKINGS, updatedBookings);
   };
 
   const checkInBooking = async (id: string) => {
+    if (usingBackendApi) {
+      const updated = await backendApi.checkInBooking(id);
+      setBookings((prev) => prev.map((b) => (b.id === id ? updated : b)));
+      return;
+    }
+
     const now = new Date();
     const updatedBookings = bookings.map((b) =>
       b.id === id ? { ...b, checkedIn: true, checkedInAt: now } : b
@@ -594,6 +815,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
   };
 
   const markStudentAttendance = async (bookingId: string, studentId: string, attended: boolean) => {
+    if (usingBackendApi) {
+      const updated = await backendApi.markStudentAttendance(bookingId, studentId, attended);
+      setBookings((prev) => prev.map((b) => (b.id === bookingId ? updated : b)));
+      return;
+    }
+
     const booking = bookings.find(b => b.id === bookingId);
     if (!booking) return;
 
@@ -603,7 +830,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
     persist(STORAGE_KEYS.BOOKINGS, updatedBookings);
   };
 
-  const getAvailableSlots = (courtId: string, date: Date, bookingType: BookingType = 'private'): string[] => {
+  const getAvailableSlots = async (courtId: string, date: Date, bookingType: BookingType = 'private'): Promise<string[]> => {
+    if (usingBackendApi) {
+      return await backendApi.getAvailableSlots(courtId, date, bookingType);
+    }
+
     const court = courts.find((c) => c.id === courtId);
     if (!court) return [];
 
@@ -658,7 +889,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
     return slots;
   };
 
-  const getBookingAnalytics = (startDate: Date, endDate: Date): BookingAnalytics => {
+  const getBookingAnalytics = async (startDate: Date, endDate: Date): Promise<BookingAnalytics> => {
+    if (usingBackendApi) {
+      return await backendApi.getBookingAnalytics(startDate, endDate);
+    }
+
     const filtered = bookings.filter(
       (b) => b.date >= startDate && b.date <= endDate
     );
@@ -680,11 +915,15 @@ export function AppProvider({ children }: { children: ReactNode }) {
     };
   };
 
-  const getCourtUtilization = (
+  const getCourtUtilization = async (
     courtId: string,
     startDate: Date,
     endDate: Date
-  ): CourtUtilization[] => {
+  ): Promise<CourtUtilization[]> => {
+    if (usingBackendApi) {
+      return await backendApi.getCourtUtilization(courtId, startDate, endDate);
+    }
+
     const results: CourtUtilization[] = [];
     let currentDate = startDate;
 
@@ -718,11 +957,31 @@ export function AppProvider({ children }: { children: ReactNode }) {
   };
 
   const updateConfig = (updates: Partial<FacilityConfig>) => {
-    setConfig({ ...config, ...updates });
+    const nextConfig = { ...config, ...updates };
+    setConfig(nextConfig);
+    if (usingBackendApi) {
+      backendApi
+        .updateConfig(updates)
+        .then((saved) => setConfig(saved))
+        .catch((error) => console.error('updateConfig failed:', error));
+    }
   };
 
   const updateUser = (updates: Partial<User>) => {
     if (!currentUser) return;
+
+    if (usingBackendApi) {
+      backendApi
+        .updateMe(updates)
+        .then((updatedUser) => {
+          const updatedUsers = users.map((u) => (u.id === updatedUser.id ? updatedUser : u));
+          setCurrentUser(updatedUser);
+          setUsers(updatedUsers);
+          localStorage.setItem('currentUser', JSON.stringify(updatedUser));
+        })
+        .catch((error) => console.error('updateUser failed:', error));
+      return;
+    }
     
     const updatedUser = { ...currentUser, ...updates };
     const updatedUsers = users.map(u => u.id === currentUser.id ? updatedUser : u);
@@ -735,18 +994,43 @@ export function AppProvider({ children }: { children: ReactNode }) {
   };
 
   const adminUpdateUser = async (id: string, updates: Partial<User>) => {
+    if (usingBackendApi) {
+      const updatedUser = await backendApi.adminUpdateUser(id, updates);
+      setUsers((prev) => prev.map((u) => (u.id === id ? updatedUser : u)));
+      if (currentUser?.id === id) {
+        setCurrentUser(updatedUser);
+        localStorage.setItem('currentUser', JSON.stringify(updatedUser));
+      }
+      return;
+    }
+
     const updatedUsers = users.map(u => u.id === id ? { ...u, ...updates } : u);
     setUsers(updatedUsers);
     persist(STORAGE_KEYS.USERS, updatedUsers);
   };
 
   const adminDeleteUser = async (id: string) => {
+    if (usingBackendApi) {
+      await backendApi.adminDeleteUser(id);
+      setUsers((prev) => prev.filter((u) => u.id !== id));
+      if (currentUser?.id === id) {
+        logout();
+      }
+      return;
+    }
+
     const updatedUsers = users.filter(u => u.id !== id);
     setUsers(updatedUsers);
     persist(STORAGE_KEYS.USERS, updatedUsers);
   };
 
   const addMembership = async (membership: Omit<MembershipPlan, 'id'>) => {
+    if (usingBackendApi) {
+      const created = await backendApi.addPlan(membership);
+      setMemberships((prev) => [...prev, created]);
+      return;
+    }
+
     const newPlan = { ...membership, id: Math.random().toString(36).substr(2, 9) };
     const updatedMemberships = [...memberships, newPlan];
     setMemberships(updatedMemberships);
@@ -754,12 +1038,24 @@ export function AppProvider({ children }: { children: ReactNode }) {
   };
 
   const updateMembership = async (id: string, updates: Partial<MembershipPlan>) => {
+    if (usingBackendApi) {
+      const updated = await backendApi.updatePlan(id, updates);
+      setMemberships((prev) => prev.map((m) => (m.id === id ? updated : m)));
+      return;
+    }
+
     const updatedMemberships = memberships.map((m) => (m.id === id ? { ...m, ...updates } : m));
     setMemberships(updatedMemberships);
     persist(STORAGE_KEYS.MEMBERSHIPS, updatedMemberships);
   };
 
   const deleteMembership = async (id: string) => {
+    if (usingBackendApi) {
+      await backendApi.deletePlan(id);
+      setMemberships((prev) => prev.filter((m) => m.id !== id));
+      return;
+    }
+
     const updatedMemberships = memberships.filter((m) => m.id !== id);
     setMemberships(updatedMemberships);
     persist(STORAGE_KEYS.MEMBERSHIPS, updatedMemberships);
@@ -767,6 +1063,16 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   const subscribe = async (planId: string) => {
     if (!currentUser) throw new Error('You must be logged in to subscribe.');
+
+    if (usingBackendApi) {
+      const plan = memberships.find((m) => m.id === planId);
+      if (!plan) throw new Error('Invalid plan selected.');
+      const raw = await backendApi.subscribe(planId, 'card');
+      const mapped = mapBackendSubscription(raw);
+      setUserSubscription(mapped.status === 'active' ? mapped : null);
+      setSubscriptionHistory((prev) => [mapped, ...prev]);
+      return;
+    }
 
     // 1. Simulate Payment Processing Delay (e.g., Stripe/PayPal)
     await new Promise(resolve => setTimeout(resolve, 2000));
@@ -803,6 +1109,16 @@ export function AppProvider({ children }: { children: ReactNode }) {
   };
 
   const markAllNotificationsAsRead = () => {
+    if (usingBackendApi) {
+      backendApi
+        .markAllNotificationsAsRead()
+        .then(() => {
+          if (currentUser) hydrateBackendData(currentUser);
+        })
+        .catch((error) => console.error('markAllNotificationsAsRead failed:', error));
+      return;
+    }
+
     if (currentUser) {
       setNotifications((prev) =>
         prev.map((n) => (n.userId === currentUser.id ? { ...n, read: true } : n))
@@ -811,12 +1127,31 @@ export function AppProvider({ children }: { children: ReactNode }) {
   };
 
   const resetPassword = async (email: string): Promise<{ success: boolean; message?: string }> => {
+    if (usingBackendApi) {
+      try {
+        const result = await backendApi.resetPassword(email);
+        return {
+          success: Boolean(result?.sent),
+          message: result?.message || 'If an account exists, password reset instructions have been sent.',
+        };
+      } catch (error: any) {
+        return { success: false, message: error?.message || 'Password reset request failed.' };
+      }
+    }
+
     // Mock reset
     await new Promise(resolve => setTimeout(resolve, 1000));
     return { success: true, message: 'Password reset instructions sent to your email (Mock).' };
   };
 
   const joinSession = async (bookingId: string) => {
+    if (usingBackendApi) {
+      if (!currentUser) throw new Error('Must be logged in to join a session');
+      const updated = await backendApi.joinSession(bookingId);
+      setBookings((prev) => prev.map((b) => (b.id === bookingId ? updated : b)));
+      return;
+    }
+
     if (!currentUser) throw new Error('Must be logged in to join a session');
 
     const booking = bookings.find(b => b.id === bookingId);

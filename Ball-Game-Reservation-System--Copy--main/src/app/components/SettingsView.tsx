@@ -1,15 +1,20 @@
 import React, { useState, useRef } from 'react';
 import { useApp } from '@/context/AppContext';
+import { backendApi } from '@/context/backendApi';
 import { Save, Clock, Calendar, AlertTriangle, Power, TrendingUp, Download, Upload, Trash2 } from 'lucide-react';
 import { toast } from 'sonner';
 
 export function SettingsView() {
   const { config, updateConfig } = useApp();
+  const usingBackendApi = backendApi.isEnabled;
   const [formData, setFormData] = useState(config);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [isImportConfirmOpen, setIsImportConfirmOpen] = useState(false);
   const [fileToImport, setFileToImport] = useState<File | null>(null);
   const [isClearDataConfirmOpen, setIsClearDataConfirmOpen] = useState(false);
+  const [isExporting, setIsExporting] = useState(false);
+  const [isImporting, setIsImporting] = useState(false);
+  const [isClearing, setIsClearing] = useState(false);
 
   const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const { name, value, type, checked } = e.target;
@@ -37,6 +42,28 @@ export function SettingsView() {
 
   const handleExportData = () => {
     try {
+      if (usingBackendApi) {
+        setIsExporting(true);
+        backendApi
+          .adminExportData()
+          .then((payload) => {
+            const jsonString = `data:text/json;charset=utf-8,${encodeURIComponent(
+              JSON.stringify(payload.data, null, 2)
+            )}`;
+            const link = document.createElement("a");
+            link.href = jsonString;
+            link.download = payload.filename;
+            link.click();
+            toast.success("Data exported successfully!");
+          })
+          .catch((error) => {
+            console.error("Failed to export backend data:", error);
+            toast.error("Failed to export backend data.");
+          })
+          .finally(() => setIsExporting(false));
+        return;
+      }
+
       const dataToExport = {
         users: JSON.parse(localStorage.getItem('ventra_users') || '[]'),
         courts: JSON.parse(localStorage.getItem('ventra_courts') || '[]'),
@@ -59,6 +86,8 @@ export function SettingsView() {
     } catch (error) {
       console.error("Failed to export data:", error);
       toast.error("An error occurred while exporting data.");
+    } finally {
+      if (!usingBackendApi) setIsExporting(false);
     }
   };
 
@@ -80,6 +109,7 @@ export function SettingsView() {
 
   const handleConfirmImport = () => {
     if (!fileToImport) return;
+    setIsImporting(true);
 
     const reader = new FileReader();
     reader.onload = (e) => {
@@ -91,9 +121,34 @@ export function SettingsView() {
         const data = JSON.parse(text);
 
         const requiredKeys = ['users', 'courts', 'bookings', 'memberships', 'auth'];
-        const hasRequiredKeys = requiredKeys.every(key => key in data);
+        const requiredBackendKeys = ['users', 'courts', 'bookings', 'memberships'];
+        const required = usingBackendApi ? requiredBackendKeys : requiredKeys;
+        const hasRequiredKeys = required.every(key => key in data);
         if (!hasRequiredKeys) {
           toast.error("Invalid backup file. Missing required data sections.");
+          setIsImporting(false);
+          return;
+        }
+
+        if (usingBackendApi) {
+          backendApi
+            .adminImportData(data, true)
+            .then(() => {
+              toast.success("Backend data imported successfully! The application will now reload.", {
+                duration: 4000,
+              });
+              setTimeout(() => {
+                window.location.reload();
+              }, 1500);
+            })
+            .catch((error) => {
+              console.error("Failed to import backend data:", error);
+              toast.error("Failed to import backend data.");
+            })
+            .finally(() => {
+              setIsImporting(false);
+            });
+          setIsImportConfirmOpen(false);
           return;
         }
 
@@ -113,13 +168,41 @@ export function SettingsView() {
       } catch (error) {
         console.error("Failed to import data:", error);
         toast.error("Failed to parse or import data. Please check the file format.");
+        setIsImporting(false);
       }
+    };
+    reader.onerror = () => {
+      setIsImporting(false);
+      toast.error("Failed to read selected file.");
     };
     reader.readAsText(fileToImport);
     setIsImportConfirmOpen(false);
   };
 
   const handleConfirmClearData = () => {
+    setIsClearing(true);
+    if (usingBackendApi) {
+      backendApi
+        .adminResetData()
+        .then(() => {
+          toast.success("Backend data reset complete. The application will now reload.", {
+            duration: 4000,
+          });
+          setTimeout(() => {
+            window.location.reload();
+          }, 1500);
+        })
+        .catch((error) => {
+          console.error("Failed to reset backend data:", error);
+          toast.error("Failed to reset backend data.");
+        })
+        .finally(() => {
+          setIsClearing(false);
+          setIsClearDataConfirmOpen(false);
+        });
+      return;
+    }
+
     localStorage.clear();
     toast.success("All data cleared. The application will now reload.", {
       duration: 4000,
@@ -127,6 +210,7 @@ export function SettingsView() {
     setTimeout(() => {
       window.location.reload();
     }, 1500);
+    setIsClearing(false);
     setIsClearDataConfirmOpen(false);
   };
 
@@ -308,10 +392,11 @@ export function SettingsView() {
               <button
                 type="button"
                 onClick={handleExportData}
+                disabled={isExporting}
                 className="px-5 py-2 bg-blue-600 text-white rounded-lg font-medium hover:bg-blue-700 transition-colors flex items-center gap-2"
               >
                 <Download size={18} />
-                Export Data
+                {isExporting ? 'Exporting...' : 'Export Data'}
               </button>
             </div>
             <div className="pt-6 border-t border-slate-200 dark:border-slate-700">
@@ -326,10 +411,11 @@ export function SettingsView() {
                 <button
                     type="button"
                     onClick={handleImportClick}
+                    disabled={isImporting}
                     className="px-5 py-2 bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-200 rounded-lg font-medium hover:bg-slate-300 dark:hover:bg-slate-600 transition-colors flex items-center gap-2"
                 >
                     <Upload size={18} />
-                    Import Data
+                    {isImporting ? 'Importing...' : 'Import Data'}
                 </button>
             </div>
             <div className="pt-6 border-t border-slate-200 dark:border-slate-700">
@@ -337,10 +423,11 @@ export function SettingsView() {
                 <button
                     type="button"
                     onClick={() => setIsClearDataConfirmOpen(true)}
+                    disabled={isClearing}
                     className="px-5 py-2 bg-red-50 dark:bg-red-900/20 text-red-600 dark:text-red-400 rounded-lg font-medium hover:bg-red-100 dark:hover:bg-red-900/30 transition-colors flex items-center gap-2"
                 >
                     <Trash2 size={18} />
-                    Clear All Data
+                    {isClearing ? 'Clearing...' : 'Clear All Data'}
                 </button>
             </div>
           </div>

@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { useApp } from '@/context/AppContext';
 import { format } from 'date-fns';
 import { useLocation, useNavigate } from 'react-router-dom';
@@ -21,6 +21,7 @@ export function HireCoachView() {
   const [duration, setDuration] = useState(60);
   const [notes, setNotes] = useState('');
   const [submitting, setSubmitting] = useState(false);
+  const [availableSlots, setAvailableSlots] = useState<string[]>([]);
   const navigate = useNavigate();
   const location = useLocation();
 
@@ -77,10 +78,25 @@ export function HireCoachView() {
     return stats;
   }, [coaches, bookings]);
 
-  const availableSlots = useMemo(() => {
-    if (!selectedCourtId) return [];
+  useEffect(() => {
+    let active = true;
+    if (!selectedCourtId) {
+      setAvailableSlots([]);
+      return;
+    }
     const date = new Date(`${selectedDate}T00:00:00`);
-    return getAvailableSlots(selectedCourtId, date, 'training');
+    getAvailableSlots(selectedCourtId, date, 'training')
+      .then((slots) => {
+        if (!active) return;
+        setAvailableSlots(slots);
+      })
+      .catch(() => {
+        if (!active) return;
+        setAvailableSlots([]);
+      });
+    return () => {
+      active = false;
+    };
   }, [getAvailableSlots, selectedCourtId, selectedDate]);
 
   const myCoachReservations = useMemo(

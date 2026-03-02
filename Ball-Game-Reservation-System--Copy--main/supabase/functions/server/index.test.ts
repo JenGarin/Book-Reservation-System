@@ -49,6 +49,86 @@ Deno.test("health endpoint responds ok", async () => {
   assertEquals(res.status, 200);
   assertEquals(payload.success, true);
   assertEquals(payload.data.status, "ok");
+  assertEquals(typeof payload.meta.requestId, "string");
+  assertEquals(payload.meta.requestId.length > 0, true);
+  assertEquals(res.headers.get("x-request-id"), payload.meta.requestId);
+});
+
+Deno.test("request id from header is echoed in response meta and header", async () => {
+  __resetForTests();
+  const requestId = "req-test-123";
+  const res = await app.request("http://local.test/api/v1/health", {
+    method: "GET",
+    headers: {
+      "x-request-id": requestId,
+    },
+  });
+  const payload = await json(res);
+  assertEquals(res.status, 200);
+  assertEquals(payload.meta.requestId, requestId);
+  assertEquals(res.headers.get("x-request-id"), requestId);
+});
+
+Deno.test("unknown route returns structured 404 with requestId", async () => {
+  __resetForTests();
+  const res = await app.request("http://local.test/api/v1/not-a-real-route");
+  const payload = await json(res);
+  assertEquals(res.status, 404);
+  assertEquals(payload.success, false);
+  assertEquals(payload.error.code, "NOT_FOUND");
+  assertEquals(typeof payload.meta.requestId, "string");
+  assertEquals(payload.meta.requestId.length > 0, true);
+  assertEquals(res.headers.get("x-request-id"), payload.meta.requestId);
+});
+
+Deno.test("facility config endpoint returns defaults", async () => {
+  __resetForTests();
+  const res = await app.request("http://local.test/api/v1/config/facility");
+  const payload = await json(res);
+  assertEquals(res.status, 200);
+  assertEquals(payload.success, true);
+  assertEquals(payload.data.openingTime, "07:00");
+  assertEquals(payload.data.closingTime, "22:00");
+  assertEquals(payload.data.bookingInterval, 60);
+});
+
+Deno.test("admin can update facility config", async () => {
+  __resetForTests();
+  const patchRes = await authed("/api/v1/config/facility", "admin-1", "admin", "PATCH", {
+    bookingInterval: 30,
+    maintenanceMode: true,
+    peakHours: [{ start: "18:00", end: "21:00" }],
+  });
+  const patched = await json(patchRes);
+  assertEquals(patchRes.status, 200);
+  assertEquals(patched.data.bookingInterval, 30);
+  assertEquals(patched.data.maintenanceMode, true);
+  assertEquals(Array.isArray(patched.data.peakHours), true);
+  assertEquals(patched.data.peakHours[0].start, "18:00");
+
+  const getRes = await app.request("http://local.test/api/v1/config/facility");
+  const after = await json(getRes);
+  assertEquals(getRes.status, 200);
+  assertEquals(after.data.bookingInterval, 30);
+  assertEquals(after.data.maintenanceMode, true);
+});
+
+Deno.test("facility config rejects invalid time range and blocks player updates", async () => {
+  __resetForTests();
+  const forbiddenRes = await authed("/api/v1/config/facility", "player-1", "player", "PATCH", {
+    bookingInterval: 45,
+  });
+  const forbidden = await json(forbiddenRes);
+  assertEquals(forbiddenRes.status, 403);
+  assertEquals(forbidden.error.code, "FORBIDDEN");
+
+  const invalidRes = await authed("/api/v1/config/facility", "admin-1", "admin", "PATCH", {
+    openingTime: "23:00",
+    closingTime: "08:00",
+  });
+  const invalid = await json(invalidRes);
+  assertEquals(invalidRes.status, 400);
+  assertEquals(invalid.error.code, "VALIDATION_ERROR");
 });
 
 Deno.test("booking lifecycle: create pending then approve", async () => {
@@ -80,6 +160,47 @@ Deno.test("booking lifecycle: create pending then approve", async () => {
   assertEquals(approveRes.status, 200);
   assertEquals(approved.success, true);
   assertEquals(approved.data.status, "confirmed");
+});
+
+Deno.test("booking create ignores client paymentStatus override", async () => {
+  __resetForTests();
+  await app.request("http://local.test/api/v1/courts");
+
+  const createRes = await authed("/api/v1/bookings", "player-1", "player", "POST", {
+    courtId: "c1",
+    type: "private",
+    date: "2099-12-26",
+    startTime: "10:00",
+    endTime: "11:00",
+    duration: 60,
+    amount: 500,
+    paymentStatus: "paid",
+  });
+  const created = await json(createRes);
+  assertEquals(createRes.status, 200);
+  assertEquals(created.data.paymentStatus, "unpaid");
+});
+
+Deno.test("booking create ignores client players and maxPlayers overrides", async () => {
+  __resetForTests();
+  await app.request("http://local.test/api/v1/courts");
+
+  const createRes = await authed("/api/v1/bookings", "player-1", "player", "POST", {
+    courtId: "c1",
+    type: "private",
+    date: "2099-12-27",
+    startTime: "10:00",
+    endTime: "11:00",
+    duration: 60,
+    amount: 500,
+    players: ["player-2", "player-3"],
+    maxPlayers: 99,
+  });
+  const created = await json(createRes);
+  assertEquals(createRes.status, 200);
+  assertEquals(Array.isArray(created.data.players), true);
+  assertEquals(created.data.players.length, 0);
+  assertEquals(created.data.maxPlayers, 4);
 });
 
 Deno.test("bearer token can authenticate booking create without x-user-id header", async () => {
@@ -189,6 +310,275 @@ Deno.test("auth login is rate limited after configured attempts", async () => {
   }
 });
 
+Deno.test("auth signup is rate limited after configured attempts", async () => {
+  __resetForTests();
+  const prevMax = Deno.env.get("RATE_LIMIT_AUTH_SIGNUP_MAX");
+  const prevWindow = Deno.env.get("RATE_LIMIT_AUTH_SIGNUP_WINDOW_SEC");
+  Deno.env.set("RATE_LIMIT_AUTH_SIGNUP_MAX", "1");
+  Deno.env.set("RATE_LIMIT_AUTH_SIGNUP_WINDOW_SEC", "60");
+  try {
+    const makeSignup = (email: string) =>
+      app.request("http://local.test/api/v1/auth/signup", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-forwarded-for": "203.0.113.11",
+        },
+        body: JSON.stringify({ email, role: "player" }),
+      });
+
+    const first = await makeSignup("rate-signup-1@court.com");
+    assertEquals(first.status, 200);
+    const second = await makeSignup("rate-signup-2@court.com");
+    const secondPayload = await json(second);
+    assertEquals(second.status, 429);
+    assertEquals(secondPayload.error.code, "RATE_LIMITED");
+  } finally {
+    if (prevMax == null) Deno.env.delete("RATE_LIMIT_AUTH_SIGNUP_MAX");
+    else Deno.env.set("RATE_LIMIT_AUTH_SIGNUP_MAX", prevMax);
+    if (prevWindow == null) Deno.env.delete("RATE_LIMIT_AUTH_SIGNUP_WINDOW_SEC");
+    else Deno.env.set("RATE_LIMIT_AUTH_SIGNUP_WINDOW_SEC", prevWindow);
+  }
+});
+
+Deno.test("public signup cannot create admin/staff by default", async () => {
+  __resetForTests();
+  const adminRes = await app.request("http://local.test/api/v1/auth/signup", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ email: "new-admin@court.com", role: "admin" }),
+  });
+  const adminPayload = await json(adminRes);
+  assertEquals(adminRes.status, 403);
+  assertEquals(adminPayload.error.code, "FORBIDDEN");
+
+  const staffRes = await app.request("http://local.test/api/v1/auth/signup", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ email: "new-staff@court.com", role: "staff" }),
+  });
+  const staffPayload = await json(staffRes);
+  assertEquals(staffRes.status, 403);
+  assertEquals(staffPayload.error.code, "FORBIDDEN");
+});
+
+Deno.test("privileged signup can be enabled via env flag", async () => {
+  __resetForTests();
+  const prev = Deno.env.get("AUTH_ALLOW_PRIVILEGED_SIGNUP");
+  Deno.env.set("AUTH_ALLOW_PRIVILEGED_SIGNUP", "true");
+  try {
+    const adminRes = await app.request("http://local.test/api/v1/auth/signup", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ email: "optin-admin@court.com", role: "admin" }),
+    });
+    const adminPayload = await json(adminRes);
+    assertEquals(adminRes.status, 200);
+    assertEquals(adminPayload.data.role, "admin");
+  } finally {
+    if (prev == null) Deno.env.delete("AUTH_ALLOW_PRIVILEGED_SIGNUP");
+    else Deno.env.set("AUTH_ALLOW_PRIVILEGED_SIGNUP", prev);
+  }
+});
+
+Deno.test("auth oauth/start validates provider and expectedRole", async () => {
+  __resetForTests();
+  const invalidProviderRes = await app.request("http://local.test/api/v1/auth/oauth/start", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ provider: "invalid-provider", expectedRole: "player" }),
+  });
+  const invalidProvider = await json(invalidProviderRes);
+  assertEquals(invalidProviderRes.status, 400);
+  assertEquals(invalidProvider.error.code, "VALIDATION_ERROR");
+
+  const invalidRoleRes = await app.request("http://local.test/api/v1/auth/oauth/start", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ provider: "google", expectedRole: "owner" }),
+  });
+  const invalidRole = await json(invalidRoleRes);
+  assertEquals(invalidRoleRes.status, 400);
+  assertEquals(invalidRole.error.code, "VALIDATION_ERROR");
+});
+
+Deno.test("auth oauth/start rejects invalid redirectUri", async () => {
+  __resetForTests();
+  const res = await app.request("http://local.test/api/v1/auth/oauth/start", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ provider: "google", expectedRole: "player", redirectUri: "not-a-url" }),
+  });
+  const payload = await json(res);
+  assertEquals(res.status, 400);
+  assertEquals(payload.error.code, "VALIDATION_ERROR");
+});
+
+Deno.test("auth oauth/start returns redirect with oauth callback params", async () => {
+  __resetForTests();
+  const res = await app.request("http://local.test/api/v1/auth/oauth/start", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      provider: "google",
+      expectedRole: "player",
+      redirectUri: "http://localhost:5173/sign-in",
+    }),
+  });
+  const payload = await json(res);
+  assertEquals(res.status, 200);
+  assertEquals(payload.data.provider, "google");
+  assertEquals(typeof payload.data.redirectUrl, "string");
+  assertEquals(payload.data.redirectUrl.includes("oauth=1"), true);
+  assertEquals(payload.data.redirectUrl.includes("email=player%40court.com"), true);
+});
+
+Deno.test("auth reset-password validates email and returns generic success", async () => {
+  __resetForTests();
+  const invalidRes = await app.request("http://local.test/api/v1/auth/reset-password", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ email: "not-an-email" }),
+  });
+  const invalid = await json(invalidRes);
+  assertEquals(invalidRes.status, 400);
+  assertEquals(invalid.error.code, "VALIDATION_ERROR");
+
+  const okKnownRes = await app.request("http://local.test/api/v1/auth/reset-password", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ email: "player@court.com" }),
+  });
+  const okKnown = await json(okKnownRes);
+  assertEquals(okKnownRes.status, 200);
+  assertEquals(okKnown.data.sent, true);
+
+  const okUnknownRes = await app.request("http://local.test/api/v1/auth/reset-password", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ email: "unknown-user@court.com" }),
+  });
+  const okUnknown = await json(okUnknownRes);
+  assertEquals(okUnknownRes.status, 200);
+  assertEquals(okUnknown.data.sent, true);
+});
+
+Deno.test("auth reset-password is rate limited after configured attempts", async () => {
+  __resetForTests();
+  const prevMax = Deno.env.get("RATE_LIMIT_AUTH_RESET_PASSWORD_MAX");
+  const prevWindow = Deno.env.get("RATE_LIMIT_AUTH_RESET_PASSWORD_WINDOW_SEC");
+  Deno.env.set("RATE_LIMIT_AUTH_RESET_PASSWORD_MAX", "1");
+  Deno.env.set("RATE_LIMIT_AUTH_RESET_PASSWORD_WINDOW_SEC", "60");
+  try {
+    const makeReset = () =>
+      app.request("http://local.test/api/v1/auth/reset-password", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-forwarded-for": "203.0.113.99",
+        },
+        body: JSON.stringify({ email: "player@court.com" }),
+      });
+
+    const first = await makeReset();
+    assertEquals(first.status, 200);
+    const second = await makeReset();
+    const secondPayload = await json(second);
+    assertEquals(second.status, 429);
+    assertEquals(secondPayload.error.code, "RATE_LIMITED");
+  } finally {
+    if (prevMax == null) Deno.env.delete("RATE_LIMIT_AUTH_RESET_PASSWORD_MAX");
+    else Deno.env.set("RATE_LIMIT_AUTH_RESET_PASSWORD_MAX", prevMax);
+    if (prevWindow == null) Deno.env.delete("RATE_LIMIT_AUTH_RESET_PASSWORD_WINDOW_SEC");
+    else Deno.env.set("RATE_LIMIT_AUTH_RESET_PASSWORD_WINDOW_SEC", prevWindow);
+  }
+});
+
+Deno.test("auth oauth/start is rate limited after configured attempts", async () => {
+  __resetForTests();
+  const prevMax = Deno.env.get("RATE_LIMIT_AUTH_OAUTH_START_MAX");
+  const prevWindow = Deno.env.get("RATE_LIMIT_AUTH_OAUTH_START_WINDOW_SEC");
+  Deno.env.set("RATE_LIMIT_AUTH_OAUTH_START_MAX", "1");
+  Deno.env.set("RATE_LIMIT_AUTH_OAUTH_START_WINDOW_SEC", "60");
+  try {
+    const makeOauthStart = () =>
+      app.request("http://local.test/api/v1/auth/oauth/start", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-forwarded-for": "203.0.113.12",
+        },
+        body: JSON.stringify({ provider: "google", expectedRole: "player" }),
+      });
+
+    const first = await makeOauthStart();
+    assertEquals(first.status, 200);
+    const second = await makeOauthStart();
+    const secondPayload = await json(second);
+    assertEquals(second.status, 429);
+    assertEquals(secondPayload.error.code, "RATE_LIMITED");
+  } finally {
+    if (prevMax == null) Deno.env.delete("RATE_LIMIT_AUTH_OAUTH_START_MAX");
+    else Deno.env.set("RATE_LIMIT_AUTH_OAUTH_START_MAX", prevMax);
+    if (prevWindow == null) Deno.env.delete("RATE_LIMIT_AUTH_OAUTH_START_WINDOW_SEC");
+    else Deno.env.set("RATE_LIMIT_AUTH_OAUTH_START_WINDOW_SEC", prevWindow);
+  }
+});
+
+Deno.test("auth endpoints write audit logs with requestId metadata", async () => {
+  __resetForTests();
+
+  const signupRes = await app.request("http://local.test/api/v1/auth/signup", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ email: "audit-auth@court.com", role: "player" }),
+  });
+  assertEquals(signupRes.status, 200);
+
+  const loginSuccessRes = await app.request("http://local.test/api/v1/auth/login", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ email: "audit-auth@court.com", expectedRole: "player" }),
+  });
+  assertEquals(loginSuccessRes.status, 200);
+
+  const loginFailRes = await app.request("http://local.test/api/v1/auth/login", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ email: "missing-user@court.com", expectedRole: "player" }),
+  });
+  assertEquals(loginFailRes.status, 401);
+
+  const oauthRes = await app.request("http://local.test/api/v1/auth/oauth/start", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ provider: "google", expectedRole: "player" }),
+  });
+  assertEquals(oauthRes.status, 200);
+
+  const logoutRes = await app.request("http://local.test/api/v1/auth/logout", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+  });
+  assertEquals(logoutRes.status, 200);
+
+  const logsRes = await authed("/api/v1/admin/audit-logs?entityType=auth&page=1&limit=100", "admin-1", "admin", "GET");
+  const logs = await json(logsRes);
+  assertEquals(logsRes.status, 200);
+
+  const actions = (logs.data as Array<{ action: string }>).map((row) => row.action);
+  assertEquals(actions.includes("auth_signup_succeeded"), true);
+  assertEquals(actions.includes("auth_login_succeeded"), true);
+  assertEquals(actions.includes("auth_login_failed"), true);
+  assertEquals(actions.includes("auth_oauth_start"), true);
+  assertEquals(actions.includes("auth_logout"), true);
+
+  const withRequestId = (logs.data as Array<{ metadata?: Record<string, unknown> }>).filter(
+    (row) => typeof row.metadata?.requestId === "string" && String(row.metadata?.requestId || "").length > 0,
+  );
+  assertEquals(withRequestId.length >= 5, true);
+});
+
 Deno.test("cannot create overlapping booking on same court/date", async () => {
   __resetForTests();
   await app.request("http://local.test/api/v1/courts");
@@ -216,6 +606,98 @@ Deno.test("cannot create overlapping booking on same court/date", async () => {
   assertEquals(conflictRes.status, 409);
   assertEquals(conflict.success, false);
   assertEquals(conflict.error.code, "CONFLICT");
+});
+
+Deno.test("booking create rejects negative amount", async () => {
+  __resetForTests();
+  await app.request("http://local.test/api/v1/courts");
+
+  const createRes = await authed("/api/v1/bookings", "player-1", "player", "POST", {
+    courtId: "c1",
+    type: "private",
+    date: "2099-12-30",
+    startTime: "10:00",
+    endTime: "11:00",
+    duration: 60,
+    amount: -100,
+  });
+  const payload = await json(createRes);
+  assertEquals(createRes.status, 400);
+  assertEquals(payload.error.code, "VALIDATION_ERROR");
+});
+
+Deno.test("booking create rejects amount with more than 2 decimal places", async () => {
+  __resetForTests();
+  await app.request("http://local.test/api/v1/courts");
+
+  const createRes = await authed("/api/v1/bookings", "player-1", "player", "POST", {
+    courtId: "c1",
+    type: "private",
+    date: "2099-12-31",
+    startTime: "10:00",
+    endTime: "11:00",
+    duration: 60,
+    amount: 100.123,
+  });
+  const payload = await json(createRes);
+  assertEquals(createRes.status, 400);
+  assertEquals(payload.error.code, "VALIDATION_ERROR");
+});
+
+Deno.test("training booking requires coachId", async () => {
+  __resetForTests();
+  await app.request("http://local.test/api/v1/courts");
+
+  const createRes = await authed("/api/v1/bookings", "player-1", "player", "POST", {
+    courtId: "c1",
+    type: "training",
+    date: "2099-12-31",
+    startTime: "12:00",
+    endTime: "13:00",
+    duration: 60,
+    amount: 100,
+  });
+  const payload = await json(createRes);
+  assertEquals(createRes.status, 400);
+  assertEquals(payload.error.code, "VALIDATION_ERROR");
+});
+
+Deno.test("booking create rejects coachId that is not a coach account", async () => {
+  __resetForTests();
+  await app.request("http://local.test/api/v1/courts");
+
+  const createRes = await authed("/api/v1/bookings", "player-1", "player", "POST", {
+    courtId: "c1",
+    type: "training",
+    coachId: "admin-1",
+    date: "2099-12-31",
+    startTime: "13:00",
+    endTime: "14:00",
+    duration: 60,
+    amount: 100,
+  });
+  const payload = await json(createRes);
+  assertEquals(createRes.status, 400);
+  assertEquals(payload.error.code, "VALIDATION_ERROR");
+});
+
+Deno.test("booking create rejects unknown coachId", async () => {
+  __resetForTests();
+  await app.request("http://local.test/api/v1/courts");
+
+  const createRes = await authed("/api/v1/bookings", "player-1", "player", "POST", {
+    courtId: "c1",
+    type: "training",
+    coachId: "coach-does-not-exist",
+    date: "2099-12-31",
+    startTime: "14:00",
+    endTime: "15:00",
+    duration: 60,
+    amount: 100,
+  });
+  const payload = await json(createRes);
+  assertEquals(createRes.status, 404);
+  assertEquals(payload.error.code, "NOT_FOUND");
 });
 
 Deno.test("player can join then leave a coach training session", async () => {
@@ -254,6 +736,74 @@ Deno.test("player can join then leave a coach training session", async () => {
   assertEquals((left.data.players || []).includes("player-1"), false);
 });
 
+Deno.test("coach session create rejects amount with more than 2 decimal places", async () => {
+  __resetForTests();
+  await app.request("http://local.test/api/v1/courts");
+
+  const createRes = await authed("/api/v1/coach/sessions", "coach-1", "coach", "POST", {
+    courtId: "c1",
+    date: "2099-12-28",
+    startTime: "08:00",
+    endTime: "09:00",
+    duration: 60,
+    maxPlayers: 4,
+    amount: 250.999,
+  });
+  const payload = await json(createRes);
+  assertEquals(createRes.status, 400);
+  assertEquals(payload.error.code, "VALIDATION_ERROR");
+});
+
+Deno.test("coach session patch rejects workflow fields like status", async () => {
+  __resetForTests();
+  await app.request("http://local.test/api/v1/courts");
+
+  const createRes = await authed("/api/v1/coach/sessions", "coach-1", "coach", "POST", {
+    courtId: "c1",
+    date: "2099-12-29",
+    startTime: "08:00",
+    endTime: "09:00",
+    duration: 60,
+    maxPlayers: 4,
+    amount: 300,
+  });
+  const created = await json(createRes);
+  assertEquals(createRes.status, 200);
+
+  const patchRes = await authed(`/api/v1/coach/sessions/${created.data.id}`, "coach-1", "coach", "PATCH", {
+    status: "cancelled",
+  });
+  const patchPayload = await json(patchRes);
+  assertEquals(patchRes.status, 400);
+  assertEquals(patchPayload.error.code, "VALIDATION_ERROR");
+});
+
+Deno.test("coach can patch own session notes and amount", async () => {
+  __resetForTests();
+  await app.request("http://local.test/api/v1/courts");
+
+  const createRes = await authed("/api/v1/coach/sessions", "coach-1", "coach", "POST", {
+    courtId: "c1",
+    date: "2099-12-30",
+    startTime: "08:00",
+    endTime: "09:00",
+    duration: 60,
+    maxPlayers: 4,
+    amount: 300,
+  });
+  const created = await json(createRes);
+  assertEquals(createRes.status, 200);
+
+  const patchRes = await authed(`/api/v1/coach/sessions/${created.data.id}`, "coach-1", "coach", "PATCH", {
+    notes: "Bring cones and bibs",
+    amount: 350.5,
+  });
+  const patched = await json(patchRes);
+  assertEquals(patchRes.status, 200);
+  assertEquals(patched.data.notes, "Bring cones and bibs");
+  assertEquals(patched.data.amount, 350.5);
+});
+
 Deno.test("admin can mark past confirmed booking as completed", async () => {
   __resetForTests();
   await app.request("http://local.test/api/v1/courts");
@@ -277,6 +827,67 @@ Deno.test("admin can mark past confirmed booking as completed", async () => {
   const completed = await json(completeRes);
   assertEquals(completeRes.status, 200);
   assertEquals(completed.data.status, "completed");
+});
+
+Deno.test("assigned coach can mark past confirmed training booking as completed", async () => {
+  __resetForTests();
+  await app.request("http://local.test/api/v1/courts");
+
+  const createRes = await authed("/api/v1/bookings", "player-1", "player", "POST", {
+    courtId: "c1",
+    type: "training",
+    coachId: "coach-1",
+    date: "2020-01-03",
+    startTime: "08:00",
+    endTime: "09:00",
+    duration: 60,
+    amount: 500,
+  });
+  const created = await json(createRes);
+  assertEquals(createRes.status, 200);
+
+  const approveRes = await authed(`/api/v1/bookings/${created.data.id}/approve`, "staff-1", "staff", "POST");
+  assertEquals(approveRes.status, 200);
+
+  const completeRes = await authed(`/api/v1/bookings/${created.data.id}/complete`, "coach-1", "coach", "POST");
+  const completed = await json(completeRes);
+  assertEquals(completeRes.status, 200);
+  assertEquals(completed.data.status, "completed");
+});
+
+Deno.test("unassigned coach cannot mark training booking as completed", async () => {
+  __resetForTests();
+  await app.request("http://local.test/api/v1/courts");
+
+  const signupRes = await app.request("http://local.test/api/v1/auth/signup", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ email: "coach2@court.com", role: "coach" }),
+  });
+  const signup = await json(signupRes);
+  assertEquals(signupRes.status, 200);
+  const coach2Id = signup.data.id as string;
+
+  const createRes = await authed("/api/v1/bookings", "player-1", "player", "POST", {
+    courtId: "c1",
+    type: "training",
+    coachId: "coach-1",
+    date: "2020-01-04",
+    startTime: "08:00",
+    endTime: "09:00",
+    duration: 60,
+    amount: 500,
+  });
+  const created = await json(createRes);
+  assertEquals(createRes.status, 200);
+
+  const approveRes = await authed(`/api/v1/bookings/${created.data.id}/approve`, "staff-1", "staff", "POST");
+  assertEquals(approveRes.status, 200);
+
+  const forbiddenRes = await authed(`/api/v1/bookings/${created.data.id}/complete`, coach2Id, "coach", "POST");
+  const forbidden = await json(forbiddenRes);
+  assertEquals(forbiddenRes.status, 403);
+  assertEquals(forbidden.error.code, "FORBIDDEN");
 });
 
 Deno.test("staff can mark past unchecked confirmed booking as no-show", async () => {
@@ -817,6 +1428,49 @@ Deno.test("payment webhook duplicate event is replayed once", async () => {
     (n) => n.title === "Payment Confirmed",
   ).length;
   assertEquals(confirmedCount, 1);
+});
+
+Deno.test("payment webhook rejects invalid signature when secret is configured", async () => {
+  __resetForTests();
+  const prevSecret = Deno.env.get("PAYMENT_WEBHOOK_SECRET");
+  Deno.env.set("PAYMENT_WEBHOOK_SECRET", "expected-signature");
+  try {
+    await app.request("http://local.test/api/v1/courts");
+
+    const createRes = await authed("/api/v1/bookings", "player-1", "player", "POST", {
+      courtId: "c1",
+      type: "private",
+      date: "2099-11-14",
+      startTime: "09:00",
+      endTime: "10:00",
+      duration: 60,
+      amount: 500,
+    });
+    const created = await json(createRes);
+    assertEquals(createRes.status, 200);
+
+    const checkoutRes = await authed("/api/v1/payments/checkout", "player-1", "player", "POST", {
+      bookingId: created.data.id,
+      method: "maya",
+    });
+    const checkout = await json(checkoutRes);
+    assertEquals(checkoutRes.status, 200);
+
+    const webhookRes = await app.request("http://local.test/api/v1/payments/webhook", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-payment-signature": "wrong-signature",
+      },
+      body: JSON.stringify({ txId: checkout.data.id, status: "paid" }),
+    });
+    const webhook = await json(webhookRes);
+    assertEquals(webhookRes.status, 401);
+    assertEquals(webhook.error.code, "UNAUTHENTICATED");
+  } finally {
+    if (prevSecret == null) Deno.env.delete("PAYMENT_WEBHOOK_SECRET");
+    else Deno.env.set("PAYMENT_WEBHOOK_SECRET", prevSecret);
+  }
 });
 
 Deno.test("admin can dry-run stale payment expiration", async () => {
@@ -1880,6 +2534,111 @@ Deno.test("staff can export bookings analytics as csv", async () => {
   assertEquals(payload.data.data.includes("bookingId"), true);
 });
 
+Deno.test("staff can filter bookings analytics by courtId", async () => {
+  __resetForTests();
+  await app.request("http://local.test/api/v1/courts");
+
+  const c1Res = await authed("/api/v1/bookings", "player-1", "player", "POST", {
+    courtId: "c1",
+    type: "private",
+    date: "2099-12-10",
+    startTime: "10:00",
+    endTime: "11:00",
+    duration: 60,
+    amount: 500,
+  });
+  assertEquals(c1Res.status, 200);
+
+  const c2Res = await authed("/api/v1/bookings", "player-1", "player", "POST", {
+    courtId: "c2",
+    type: "private",
+    date: "2099-12-10",
+    startTime: "12:00",
+    endTime: "13:00",
+    duration: 60,
+    amount: 700,
+  });
+  assertEquals(c2Res.status, 200);
+
+  const analyticsRes = await authed(
+    "/api/v1/analytics/bookings?startDate=2099-12-01&endDate=2099-12-31&courtId=c1",
+    "staff-1",
+    "staff",
+    "GET",
+  );
+  const payload = await json(analyticsRes);
+  assertEquals(analyticsRes.status, 200);
+  assertEquals(payload.data.totalBookings, 1);
+  assertEquals(payload.data.totalRevenue, 500);
+  assertEquals(payload.data.averageBookingValue, 500);
+  assertEquals(payload.data.noShows, 0);
+});
+
+Deno.test("bookings analytics rejects invalid type filter", async () => {
+  __resetForTests();
+  await app.request("http://local.test/api/v1/courts");
+
+  const res = await authed(
+    "/api/v1/analytics/bookings?type=not_real_type",
+    "staff-1",
+    "staff",
+    "GET",
+  );
+  const payload = await json(res);
+  assertEquals(res.status, 400);
+  assertEquals(payload.error.code, "VALIDATION_ERROR");
+});
+
+Deno.test("bookings analytics export rejects invalid status filter", async () => {
+  __resetForTests();
+  await app.request("http://local.test/api/v1/courts");
+
+  const exportRes = await authed(
+    "/api/v1/analytics/bookings/export?format=csv&status=not_real_status",
+    "staff-1",
+    "staff",
+    "GET",
+  );
+  const payload = await json(exportRes);
+  assertEquals(exportRes.status, 400);
+  assertEquals(payload.error.code, "VALIDATION_ERROR");
+});
+
+Deno.test("bookings analytics export rejects invalid type filter", async () => {
+  __resetForTests();
+  await app.request("http://local.test/api/v1/courts");
+
+  const exportRes = await authed(
+    "/api/v1/analytics/bookings/export?format=json&type=not_real_type",
+    "staff-1",
+    "staff",
+    "GET",
+  );
+  const payload = await json(exportRes);
+  assertEquals(exportRes.status, 400);
+  assertEquals(payload.error.code, "VALIDATION_ERROR");
+});
+
+Deno.test("player cannot access bookings analytics export", async () => {
+  __resetForTests();
+  await app.request("http://local.test/api/v1/courts");
+
+  const res = await authed("/api/v1/analytics/bookings/export?format=json", "player-1", "player", "GET");
+  const payload = await json(res);
+  assertEquals(res.status, 403);
+  assertEquals(payload.error.code, "FORBIDDEN");
+});
+
+Deno.test("coach cannot access attendance analytics overview", async () => {
+  __resetForTests();
+  await app.request("http://local.test/api/v1/courts");
+
+  const res = await authed("/api/v1/analytics/attendance/overview?startDate=2099-12-01&endDate=2099-12-31", "coach-1", "coach", "GET");
+  const payload = await json(res);
+  assertEquals(res.status, 403);
+  assertEquals(payload.error.code, "FORBIDDEN");
+});
+
 Deno.test("admin can export attendance analytics as json", async () => {
   __resetForTests();
   await app.request("http://local.test/api/v1/courts");
@@ -2013,6 +2772,135 @@ Deno.test("admin can purge audit logs with dry-run and actual delete", async () 
   const purge = await json(purgeRes);
   assertEquals(purgeRes.status, 200);
   assertEquals(purge.data.deleted >= 1, true);
+});
+
+Deno.test("staff can export admin data snapshot", async () => {
+  __resetForTests();
+  await app.request("http://local.test/api/v1/courts");
+
+  const res = await authed("/api/v1/admin/data/export", "staff-1", "staff", "GET");
+  const payload = await json(res);
+  assertEquals(res.status, 200);
+  assertEquals(typeof payload.data.filename, "string");
+  assertEquals(Array.isArray(payload.data.data.users), true);
+  assertEquals(Array.isArray(payload.data.data.courts), true);
+  assertEquals(typeof payload.data.data.config.openingTime, "string");
+});
+
+Deno.test("admin reset returns system to seeded state", async () => {
+  __resetForTests();
+  await app.request("http://local.test/api/v1/courts");
+
+  const createRes = await authed("/api/v1/bookings", "player-1", "player", "POST", {
+    courtId: "c1",
+    type: "private",
+    date: "2099-12-29",
+    startTime: "09:00",
+    endTime: "10:00",
+    duration: 60,
+    amount: 500,
+  });
+  assertEquals(createRes.status, 200);
+
+  const resetRes = await authed("/api/v1/admin/data/reset", "admin-1", "admin", "POST", {});
+  const resetPayload = await json(resetRes);
+  assertEquals(resetRes.status, 200);
+  assertEquals(resetPayload.data.reset, true);
+
+  const bookingsRes = await authed("/api/v1/bookings", "admin-1", "admin", "GET");
+  const bookings = await json(bookingsRes);
+  assertEquals(bookingsRes.status, 200);
+  assertEquals(Array.isArray(bookings.data), true);
+  assertEquals(bookings.data.length, 0);
+
+  const courtsRes = await app.request("http://local.test/api/v1/courts");
+  const courts = await json(courtsRes);
+  assertEquals(courtsRes.status, 200);
+  assertEquals(courts.data.length >= 1, true);
+
+  const configRes = await app.request("http://local.test/api/v1/config/facility");
+  const config = await json(configRes);
+  assertEquals(configRes.status, 200);
+  assertEquals(config.data.bookingInterval, 60);
+});
+
+Deno.test("admin can import snapshot data", async () => {
+  __resetForTests();
+  await app.request("http://local.test/api/v1/courts");
+
+  const snapshot = {
+    users: [
+      { id: "admin-1", email: "admin@court.com", name: "Admin User", role: "admin", createdAt: "2099-01-01T00:00:00.000Z" },
+      { id: "player-1", email: "player@court.com", name: "Alex Johnson", role: "player", createdAt: "2099-01-01T00:00:00.000Z" },
+    ],
+    courts: [
+      {
+        id: "c1",
+        name: "Imported Court",
+        courtNumber: "1",
+        type: "indoor",
+        surfaceType: "hardcourt",
+        hourlyRate: 500,
+        peakHourRate: 700,
+        status: "active",
+        operatingHours: { start: "06:00", end: "22:00" },
+      },
+    ],
+    bookings: [
+      {
+        id: "bk-import-1",
+        courtId: "c1",
+        userId: "player-1",
+        type: "private",
+        date: "2099-12-30",
+        startTime: "08:00",
+        endTime: "09:00",
+        duration: 60,
+        status: "confirmed",
+        paymentStatus: "unpaid",
+        amount: 500,
+        players: [],
+        maxPlayers: 4,
+        checkedIn: false,
+        createdAt: "2099-12-01T00:00:00.000Z",
+      },
+    ],
+    memberships: [
+      { id: "m1", name: "Basic", price: 1000, interval: "month", tier: "basic", description: "Imported", features: [] },
+    ],
+    subscriptions: [],
+    notifications: [],
+    coachApplications: [],
+    config: {
+      openingTime: "06:00",
+      closingTime: "23:00",
+      bookingInterval: 30,
+      bufferTime: 10,
+      maxBookingDuration: 180,
+      advanceBookingDays: 14,
+      cancellationCutoffHours: 12,
+      peakHours: [{ start: "18:00", end: "21:00" }],
+      maintenanceMode: false,
+    },
+  };
+
+  const importRes = await authed("/api/v1/admin/data/import", "admin-1", "admin", "POST", {
+    overwrite: true,
+    data: snapshot,
+  });
+  const imported = await json(importRes);
+  assertEquals(importRes.status, 200);
+  assertEquals(imported.data.imported.bookings, 1);
+
+  const bookingsRes = await authed("/api/v1/bookings", "admin-1", "admin", "GET");
+  const bookings = await json(bookingsRes);
+  assertEquals(bookingsRes.status, 200);
+  assertEquals(bookings.data.some((row: { id: string }) => row.id === "bk-import-1"), true);
+
+  const configRes = await app.request("http://local.test/api/v1/config/facility");
+  const config = await json(configRes);
+  assertEquals(configRes.status, 200);
+  assertEquals(config.data.bookingInterval, 30);
 });
 
 Deno.test("booking create is idempotent with same key and payload", async () => {

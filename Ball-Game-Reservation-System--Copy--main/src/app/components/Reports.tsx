@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { useApp } from '@/context/AppContext';
 import { 
   BarChart, 
@@ -19,15 +19,24 @@ import { format, startOfMonth, endOfMonth, eachDayOfInterval, isSameDay } from '
 import { Calendar, TrendingUp, DollarSign, Activity, Download } from 'lucide-react';
 import DatePicker from 'react-datepicker';
 import "react-datepicker/dist/react-datepicker.css";
+import { BookingAnalytics } from '@/types';
+import { backendApi } from '@/context/backendApi';
 
 export function Reports() {
-  const { bookings, courts, currentUser, users } = useApp();
+  const { bookings, courts, currentUser, users, getCourtUtilization } = useApp();
+  const usingBackendApi = backendApi.isEnabled;
   const [dateRange, setDateRange] = useState<[Date | null, Date | null]>([
     startOfMonth(new Date()),
     endOfMonth(new Date())
   ]);
   const [startDate, endDate] = dateRange;
   const [selectedCourtId, setSelectedCourtId] = useState<string>('all');
+  const [backendAnalytics, setBackendAnalytics] = useState<BookingAnalytics | null>(null);
+  const [backendUtilizationData, setBackendUtilizationData] = useState<Array<{ name: string; hours: number }>>([]);
+  const [isBackendAnalyticsLoading, setIsBackendAnalyticsLoading] = useState(false);
+  const [isBackendUtilizationLoading, setIsBackendUtilizationLoading] = useState(false);
+  const [backendAnalyticsError, setBackendAnalyticsError] = useState<string | null>(null);
+  const [isExportingCsv, setIsExportingCsv] = useState(false);
 
   const analytics = useMemo(() => {
     if (!startDate || !endDate) return null;
@@ -54,6 +63,36 @@ export function Reports() {
       averageBookingValue: totalBookings > 0 ? totalRevenue / totalBookings : 0,
     };
   }, [startDate, endDate, bookings, selectedCourtId]);
+
+  useEffect(() => {
+    let active = true;
+    if (!usingBackendApi || !startDate || !endDate) {
+      setBackendAnalytics(null);
+      setBackendAnalyticsError(null);
+      setIsBackendAnalyticsLoading(false);
+      return;
+    }
+    setIsBackendAnalyticsLoading(true);
+    setBackendAnalyticsError(null);
+    backendApi
+      .getBookingAnalytics(startDate, endDate, selectedCourtId === 'all' ? {} : { courtId: selectedCourtId })
+      .then((data) => {
+        if (!active) return;
+        setBackendAnalytics(data);
+      })
+      .catch(() => {
+        if (!active) return;
+        setBackendAnalytics(null);
+        setBackendAnalyticsError('Failed to load analytics from backend.');
+      })
+      .finally(() => {
+        if (!active) return;
+        setIsBackendAnalyticsLoading(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [usingBackendApi, startDate, endDate, selectedCourtId]);
 
   const revenueData = useMemo(() => {
     if (!startDate || !endDate) return [];
@@ -92,15 +131,68 @@ export function Reports() {
     });
   }, [startDate, endDate, bookings, courts, selectedCourtId]);
 
+  useEffect(() => {
+    let active = true;
+    if (!usingBackendApi || !startDate || !endDate) {
+      setBackendUtilizationData([]);
+      setIsBackendUtilizationLoading(false);
+      return;
+    }
+    setIsBackendUtilizationLoading(true);
+    const targetCourts = selectedCourtId === 'all' ? courts : courts.filter((c) => c.id === selectedCourtId);
+    if (targetCourts.length === 0) {
+      setBackendUtilizationData([]);
+      setIsBackendUtilizationLoading(false);
+      return;
+    }
+
+    Promise.all(
+      targetCourts.map(async (court) => {
+        const rows = await getCourtUtilization(court.id, startDate, endDate);
+        const totalHours = rows.reduce((sum, row) => sum + Number(row.hoursBooked || 0), 0);
+        return {
+          name: court.name,
+          hours: Math.round(totalHours * 10) / 10,
+        };
+      })
+    )
+      .then((rows) => {
+        if (!active) return;
+        setBackendUtilizationData(rows);
+      })
+      .catch(() => {
+        if (!active) return;
+        setBackendUtilizationData([]);
+      })
+      .finally(() => {
+        if (!active) return;
+        setIsBackendUtilizationLoading(false);
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [usingBackendApi, startDate, endDate, selectedCourtId, courts, getCourtUtilization]);
+
+  const effectiveAnalytics = useMemo(() => {
+    if (usingBackendApi && backendAnalytics) return backendAnalytics;
+    return analytics;
+  }, [analytics, backendAnalytics, usingBackendApi]);
+
+  const effectiveUtilizationData = useMemo(() => {
+    if (usingBackendApi && backendUtilizationData.length > 0) return backendUtilizationData;
+    return utilizationData;
+  }, [backendUtilizationData, utilizationData, usingBackendApi]);
+
   const statusData = useMemo(() => {
-    if (!analytics) return [];
+    if (!effectiveAnalytics) return [];
     return [
-      { name: 'Completed', value: analytics.completedBookings, color: '#10b981' },
-      { name: 'Cancelled', value: analytics.cancelledBookings, color: '#ef4444' },
-      { name: 'No Show', value: analytics.noShows, color: '#f59e0b' },
-      { name: 'Upcoming', value: analytics.totalBookings - (analytics.completedBookings + analytics.cancelledBookings + analytics.noShows), color: '#3b82f6' }
+      { name: 'Completed', value: effectiveAnalytics.completedBookings, color: '#10b981' },
+      { name: 'Cancelled', value: effectiveAnalytics.cancelledBookings, color: '#ef4444' },
+      { name: 'No Show', value: effectiveAnalytics.noShows, color: '#f59e0b' },
+      { name: 'Upcoming', value: effectiveAnalytics.totalBookings - (effectiveAnalytics.completedBookings + effectiveAnalytics.cancelledBookings + effectiveAnalytics.noShows), color: '#3b82f6' }
     ].filter(item => item.value > 0);
-  }, [analytics]);
+  }, [effectiveAnalytics]);
 
   const revenueByTypeData = useMemo(() => {
     if (!startDate || !endDate) return [];
@@ -156,7 +248,31 @@ export function Reports() {
       .slice(0, 5);
   }, [startDate, endDate, bookings, selectedCourtId, users]);
 
-  const handleExportCSV = () => {
+  const handleExportCSV = async () => {
+    if (usingBackendApi && startDate && endDate) {
+      try {
+        setIsExportingCsv(true);
+        const { filename, csv } = await backendApi.exportBookingsCsv({
+          startDate,
+          endDate,
+          courtId: selectedCourtId === 'all' ? undefined : selectedCourtId,
+        });
+        const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.setAttribute('href', url);
+        link.setAttribute('download', filename);
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        return;
+      } catch {
+        // Fallback to local export.
+      } finally {
+        setIsExportingCsv(false);
+      }
+    }
+
     if (!revenueData.length) return;
     
     const headers = ['Date', 'Revenue', 'Bookings'];
@@ -188,7 +304,7 @@ export function Reports() {
     );
   }
 
-  if (!startDate || !endDate || !analytics) return null;
+  if (!startDate || !endDate || !effectiveAnalytics) return null;
 
   return (
     <div className="min-h-screen bg-gray-50 dark:bg-slate-950 p-6 space-y-8 animate-in fade-in duration-500">
@@ -196,6 +312,14 @@ export function Reports() {
         <div>
           <h1 className="text-2xl font-bold text-slate-900 dark:text-white">Analytics & Reports</h1>
           <p className="text-slate-500 dark:text-slate-400">Visualize performance metrics and booking trends.</p>
+          {usingBackendApi && (
+            <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
+              {(isBackendAnalyticsLoading || isBackendUtilizationLoading) ? 'Syncing analytics from backend...' : 'Using backend analytics data.'}
+            </p>
+          )}
+          {backendAnalyticsError && (
+            <p className="text-xs text-rose-600 mt-1">{backendAnalyticsError}</p>
+          )}
         </div>
         <div className="flex flex-col sm:flex-row gap-3">
           <div className="flex items-center gap-3 bg-white dark:bg-slate-900 p-1 rounded-xl border border-slate-200 dark:border-slate-800">
@@ -236,7 +360,7 @@ export function Reports() {
                 <span className="text-xs font-bold text-emerald-600 bg-emerald-50 px-2 py-1 rounded-full">+12%</span>
             </div>
             <p className="text-sm text-slate-500 dark:text-slate-400 font-medium">Total Revenue</p>
-            <h3 className="text-2xl font-bold text-slate-900 dark:text-white">₱{analytics.totalRevenue.toLocaleString()}</h3>
+            <h3 className="text-2xl font-bold text-slate-900 dark:text-white">₱{effectiveAnalytics.totalRevenue.toLocaleString()}</h3>
         </div>
         <div className="bg-white dark:bg-slate-900 p-6 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm">
             <div className="flex items-center justify-between mb-4">
@@ -246,7 +370,7 @@ export function Reports() {
                 <span className="text-xs font-bold text-emerald-600 bg-emerald-50 px-2 py-1 rounded-full">+5%</span>
             </div>
             <p className="text-sm text-slate-500 dark:text-slate-400 font-medium">Total Bookings</p>
-            <h3 className="text-2xl font-bold text-slate-900 dark:text-white">{analytics.totalBookings}</h3>
+            <h3 className="text-2xl font-bold text-slate-900 dark:text-white">{effectiveAnalytics.totalBookings}</h3>
         </div>
         <div className="bg-white dark:bg-slate-900 p-6 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm">
             <div className="flex items-center justify-between mb-4">
@@ -256,17 +380,17 @@ export function Reports() {
                 <span className="text-xs font-bold text-slate-500 bg-slate-100 px-2 py-1 rounded-full">Avg</span>
             </div>
             <p className="text-sm text-slate-500 dark:text-slate-400 font-medium">Avg. Booking Value</p>
-            <h3 className="text-2xl font-bold text-slate-900 dark:text-white">₱{Math.round(analytics.averageBookingValue)}</h3>
+            <h3 className="text-2xl font-bold text-slate-900 dark:text-white">₱{Math.round(effectiveAnalytics.averageBookingValue)}</h3>
         </div>
         <div className="bg-white dark:bg-slate-900 p-6 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm">
             <div className="flex items-center justify-between mb-4">
                 <div className="p-3 bg-rose-50 dark:bg-rose-900/20 rounded-xl text-rose-600 dark:text-rose-400">
                     <Activity size={24} />
                 </div>
-                <span className="text-xs font-bold text-rose-600 bg-rose-50 px-2 py-1 rounded-full">{analytics.noShowRate.toFixed(1)}%</span>
+                <span className="text-xs font-bold text-rose-600 bg-rose-50 px-2 py-1 rounded-full">{effectiveAnalytics.noShowRate.toFixed(1)}%</span>
             </div>
             <p className="text-sm text-slate-500 dark:text-slate-400 font-medium">No Show Rate</p>
-            <h3 className="text-2xl font-bold text-slate-900 dark:text-white">{analytics.noShows}</h3>
+            <h3 className="text-2xl font-bold text-slate-900 dark:text-white">{effectiveAnalytics.noShows}</h3>
         </div>
       </div>
 
@@ -294,7 +418,7 @@ export function Reports() {
             <h3 className="text-lg font-bold text-slate-900 dark:text-white mb-6">Court Utilization (Hours)</h3>
             <div className="h-80">
                 <ResponsiveContainer width="100%" height="100%">
-                    <BarChart data={utilizationData} layout="vertical">
+                    <BarChart data={effectiveUtilizationData} layout="vertical">
                         <CartesianGrid strokeDasharray="3 3" horizontal={true} vertical={false} stroke="#e2e8f0" />
                         <XAxis type="number" axisLine={false} tickLine={false} tick={{fill: '#94a3b8', fontSize: 12}} />
                         <YAxis dataKey="name" type="category" axisLine={false} tickLine={false} tick={{fill: '#94a3b8', fontSize: 12}} width={100} />
@@ -370,9 +494,10 @@ export function Reports() {
                 <h3 className="text-lg font-bold text-slate-900 dark:text-white">Recent Transactions</h3>
                 <button 
                     onClick={handleExportCSV}
+                    disabled={isExportingCsv}
                     className="text-sm text-teal-600 font-medium hover:text-teal-700 flex items-center gap-1"
                 >
-                    <Download size={16} /> Export CSV
+                    <Download size={16} /> {isExportingCsv ? 'Exporting...' : 'Export CSV'}
                 </button>
              </div>
              <div className="overflow-x-auto">

@@ -1,5 +1,3 @@
-import { createClient } from "jsr:@supabase/supabase-js@2.49.8";
-
 type EntityPrefix =
   | "user"
   | "court"
@@ -13,15 +11,24 @@ type EntityPrefix =
   | "idem"
   | "payment_tx";
 
-const client = () =>
-  {
-    const url = Deno.env.get("SUPABASE_URL");
-    const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
-    if (!url || !serviceRoleKey) {
-      throw new Error("Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY environment variables.");
-    }
-    return createClient(url, serviceRoleKey);
-  };
+let createClientFactory: ((url: string, key: string) => any) | null = null;
+
+const loadCreateClient = async () => {
+  if (createClientFactory) return createClientFactory;
+  const mod = await import("jsr:@supabase/supabase-js@2.49.8");
+  createClientFactory = mod.createClient;
+  return createClientFactory;
+};
+
+const client = async () => {
+  const url = Deno.env.get("SUPABASE_URL");
+  const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
+  if (!url || !serviceRoleKey) {
+    throw new Error("Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY environment variables.");
+  }
+  const createClient = await loadCreateClient();
+  return createClient(url, serviceRoleKey);
+};
 
 const entityPrefixes: EntityPrefix[] = [
   "user",
@@ -365,7 +372,7 @@ const paymentTxFromRow = (row: any) => ({
 });
 
 const upsertEntity = async (prefix: EntityPrefix, value: any): Promise<void> => {
-  const supabase = client();
+  const supabase = await client();
   let table = "";
   let row: any = value;
 
@@ -409,7 +416,7 @@ const upsertEntity = async (prefix: EntityPrefix, value: any): Promise<void> => 
 };
 
 const getEntity = async (prefix: EntityPrefix, id: string): Promise<any> => {
-  const supabase = client();
+  const supabase = await client();
   let table = "";
   if (prefix === "user") table = "app_users";
   if (prefix === "court") table = "courts";
@@ -441,7 +448,7 @@ const getEntity = async (prefix: EntityPrefix, id: string): Promise<any> => {
 };
 
 const deleteEntity = async (prefix: EntityPrefix, id: string): Promise<void> => {
-  const supabase = client();
+  const supabase = await client();
   let table = "";
   if (prefix === "user") table = "app_users";
   if (prefix === "court") table = "courts";
@@ -459,7 +466,7 @@ const deleteEntity = async (prefix: EntityPrefix, id: string): Promise<void> => 
 };
 
 const listEntity = async (prefix: EntityPrefix): Promise<any[]> => {
-  const supabase = client();
+  const supabase = await client();
   let table = "";
   if (prefix === "user") table = "app_users";
   if (prefix === "court") table = "courts";
@@ -508,7 +515,7 @@ export const set = async (key: string, value: any): Promise<void> => {
     }
   }
 
-  const supabase = client();
+  const supabase = await client();
   const { error } = await supabase.from("kv_store_ce0562bb").upsert({ key, value });
   if (error) throw new Error(error.message);
 };
@@ -530,7 +537,7 @@ export const get = async (key: string): Promise<any> => {
     }
   }
 
-  const supabase = client();
+  const supabase = await client();
   const { data, error } = await supabase
     .from("kv_store_ce0562bb")
     .select("value")
@@ -558,7 +565,7 @@ export const del = async (key: string): Promise<void> => {
     }
   }
 
-  const supabase = client();
+  const supabase = await client();
   const { error } = await supabase.from("kv_store_ce0562bb").delete().eq("key", key);
   if (error) throw new Error(error.message);
 };
@@ -595,7 +602,7 @@ export const mset = async (keys: string[], values: any[]): Promise<void> => {
   }
 
   if (fallbackRows.length > 0) {
-    const supabase = client();
+    const supabase = await client();
     const { error } = await supabase.from("kv_store_ce0562bb").upsert(fallbackRows);
     if (error) throw new Error(error.message);
   }
@@ -648,11 +655,11 @@ export const getByPrefix = async (prefix: string): Promise<any[]> => {
     }
   }
 
-  const supabase = client();
+  const supabase = await client();
   const { data, error } = await supabase
     .from("kv_store_ce0562bb")
     .select("key, value")
     .like("key", `${prefix}%`);
   if (error) throw new Error(error.message);
-  return data?.map((d) => d.value) ?? [];
+  return data?.map((d: { value: any }) => d.value) ?? [];
 };

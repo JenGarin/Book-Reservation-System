@@ -7,9 +7,11 @@
     "npm:@supabase/auth-js@2.69.1": "2.69.1",
     "npm:@supabase/functions-js@2.4.4": "2.4.4",
     "npm:@supabase/node-fetch@2.6.15": "2.6.15",
+    "npm:@supabase/node-fetch@^2.6.13": "2.6.15",
     "npm:@supabase/postgrest-js@1.19.4": "1.19.4",
     "npm:@supabase/realtime-js@2.11.2": "2.11.2",
     "npm:@supabase/storage-js@2.7.1": "2.7.1",
+    "npm:@supabase/supabase-js@2.49.8": "2.49.8",
     "npm:hono@*": "4.12.1"
   },
   "jsr": {
@@ -27,7 +29,7 @@
       "dependencies": [
         "npm:@supabase/auth-js",
         "npm:@supabase/functions-js",
-        "npm:@supabase/node-fetch",
+        "npm:@supabase/node-fetch@2.6.15",
         "npm:@supabase/postgrest-js",
         "npm:@supabase/realtime-js",
         "npm:@supabase/storage-js"
@@ -74,6 +76,17 @@
         "@supabase/node-fetch"
       ]
     },
+    "@supabase/supabase-js@2.49.8": {
+      "integrity": "sha512-zzBQLgS/jZs7btWcIAc7V5yfB+juG7h0AXxKowMJuySsO5vK+F7Vp+HCa07Z+tu9lZtr3sT9fofkc86bdylmtw==",
+      "dependencies": [
+        "@supabase/auth-js",
+        "@supabase/functions-js",
+        "@supabase/node-fetch",
+        "@supabase/postgrest-js",
+        "@supabase/realtime-js",
+        "@supabase/storage-js"
+      ]
+    },
     "@types/node@25.3.0": {
       "integrity": "sha512-4K3bqJpXpqfg2XKGK9bpDTc6xO/xoUP/RBWS7AtRMug6zZFaRekiLzjVtAoZMquxoAbzBvy5nxQ7veS5eYzf8A==",
       "dependencies": [
@@ -111,5 +124,10 @@
     "ws@8.19.0": {
       "integrity": "sha512-blAT2mjOEIi0ZzruJfIhb3nps74PRWTCz1IjglWEEpQl5XS/UNama6u2/rjFkDDouqr4L67ry+1aGIALViWjDg=="
     }
+  },
+  "workspace": {
+    "dependencies": [
+      "npm:@supabase/node-fetch@^2.6.13"
+    ]
   }
 }

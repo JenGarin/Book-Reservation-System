@@ -19,7 +19,8 @@ import {
   CheckCircle
 } from 'lucide-react';
 import { format, startOfMonth, endOfMonth, startOfWeek, endOfWeek } from 'date-fns';
-import React from 'react';
+import React, { useEffect, useState } from 'react';
+import { BookingAnalytics } from '@/types';
 import { LogOut as LogOutIcon } from 'react-icons/log-out';
 import { Plus } from 'react-icons/plus';
 
@@ -37,7 +38,39 @@ export function Dashboard() {
 
   const monthStart = startOfMonth(new Date());
   const monthEnd = endOfMonth(new Date());
-  const monthlyAnalytics = getBookingAnalytics(monthStart, monthEnd);
+  const [monthlyAnalytics, setMonthlyAnalytics] = useState<BookingAnalytics>({
+    totalBookings: 0,
+    completedBookings: 0,
+    cancelledBookings: 0,
+    noShows: 0,
+    noShowRate: 0,
+    totalRevenue: 0,
+    averageBookingValue: 0,
+  });
+
+  useEffect(() => {
+    let active = true;
+    getBookingAnalytics(monthStart, monthEnd)
+      .then((data) => {
+        if (!active) return;
+        setMonthlyAnalytics(data);
+      })
+      .catch(() => {
+        if (!active) return;
+        setMonthlyAnalytics({
+          totalBookings: 0,
+          completedBookings: 0,
+          cancelledBookings: 0,
+          noShows: 0,
+          noShowRate: 0,
+          totalRevenue: 0,
+          averageBookingValue: 0,
+        });
+      });
+    return () => {
+      active = false;
+    };
+  }, [getBookingAnalytics, monthStart, monthEnd]);
 
   const isAdmin = currentUser?.role === 'admin' || currentUser?.role === 'staff';
 
