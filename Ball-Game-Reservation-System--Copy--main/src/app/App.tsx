@@ -6,6 +6,8 @@ import { Login } from './components/Login';
 import { RoleSelection } from './components/RoleSelection';
 import { SignUp } from './components/SignUp';
 import { ForgotPassword } from './components/ForgotPassword';
+import { TermsOfService } from './components/TermsOfService';
+import { PrivacyPolicy } from './components/PrivacyPolicy';
 import { LandingPage } from './components/LandingPage';
 import { Sidebar } from './components/Sidebar';
 import { DashboardView } from './components/DashboardView';
@@ -98,6 +100,8 @@ export default function App() {
             <Route path="/sign-in" element={<Login />} />
             <Route path="/signup" element={<SignUp />} />
             <Route path="/forgot-password" element={<ForgotPassword />} />
+            <Route path="/terms-of-service" element={<TermsOfService />} />
+            <Route path="/privacy-policy" element={<PrivacyPolicy />} />
             
             <Route element={<DashboardLayout />}>
               <Route path="/dashboard" element={<DashboardEntry />} />

@@ -246,37 +246,6 @@ export const backendApi = {
     });
   },
 
-  async oauthStart(provider: "google" | "facebook", expectedRole: Role, redirectUri?: string) {
-    ensureBackendEnabled();
-    return await request<{ provider: string; expectedRole: string; redirectUrl: string }>("/auth/oauth/start", {
-      method: "POST",
-      auth: false,
-      body: {
-        provider,
-        expectedRole,
-        redirectUri,
-      },
-    });
-  },
-
-  async oauthCallback(state: string) {
-    ensureBackendEnabled();
-    const data = await request<any>("/auth/oauth/callback", {
-      method: "POST",
-      auth: false,
-      body: {
-        state,
-      },
-    });
-    const session: ApiSession = {
-      accessToken: String(data?.accessToken || ""),
-      refreshToken: data?.refreshToken ? String(data.refreshToken) : undefined,
-      user: mapUser(data?.user || {}),
-    };
-    writeSession(session);
-    return session.user;
-  },
-
   async getUsers(role: Role) {
     ensureBackendEnabled();
     if (role === "admin" || role === "staff") {

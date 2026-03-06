@@ -140,7 +140,7 @@ export function SignUp() {
               />
             </div>
             <label htmlFor="terms" className="text-sm text-gray-600">
-              I agree to the <a href="#" className="text-indigo-700 font-medium hover:text-indigo-900 hover:underline">Terms of Service</a> and <a href="#" className="text-indigo-700 font-medium hover:text-indigo-900 hover:underline">Privacy Policy</a>
+              I agree to the <Link to="/terms-of-service" className="text-indigo-700 font-medium hover:text-indigo-900 hover:underline">Terms of Service</Link> and <Link to="/privacy-policy" className="text-indigo-700 font-medium hover:text-indigo-900 hover:underline">Privacy Policy</Link>
             </label>
           </div>
 

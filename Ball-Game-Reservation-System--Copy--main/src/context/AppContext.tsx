@@ -378,29 +378,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
   }, [currentUser, hydrateBackendData, usingBackendApi]);
 
   useEffect(() => {
-    if (!usingBackendApi) return;
-    const params = new URLSearchParams(window.location.search);
-    if (params.get('oauth') !== '1') return;
-    const state = String(params.get('state') || '').trim();
-    if (!state) return;
-
-    backendApi
-      .oauthCallback(state)
-      .then(async (user) => {
-        setCurrentUser(user);
-        localStorage.setItem('currentUser', JSON.stringify(user));
-        await hydrateBackendData(user);
-      })
-      .catch((error) => {
-        console.error('Backend OAuth callback login failed:', error);
-      })
-      .finally(() => {
-        const cleanUrl = `${window.location.origin}${window.location.pathname}`;
-        window.history.replaceState({}, '', cleanUrl);
-      });
-  }, [hydrateBackendData, usingBackendApi]);
-
-  useEffect(() => {
     if (usingBackendApi) return;
     const bootstrapOauthSession = async () => {
       const { data } = await supabase.auth.getSession();
@@ -624,16 +601,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   const signInWithProvider = async (provider: 'google' | 'facebook', role: string = 'player'): Promise<{ success: boolean; message?: string }> => {
     if (usingBackendApi) {
-      try {
-        const roleValue = ['admin', 'staff', 'coach', 'player'].includes(role) ? (role as User['role']) : 'player';
-        const response = await backendApi.oauthStart(provider, roleValue, `${window.location.origin}/sign-in`);
-        const redirectUrl = String(response?.redirectUrl || '').trim();
-        if (!redirectUrl) return { success: false, message: 'Missing OAuth redirect URL.' };
-        window.location.href = redirectUrl;
-        return { success: true };
-      } catch (error: any) {
-        return { success: false, message: error?.message || 'Social sign-in failed' };
-      }
+      void provider;
+      void role;
+      return { success: false, message: 'Google/Facebook backend OAuth is disabled.' };
     }
 
     try {

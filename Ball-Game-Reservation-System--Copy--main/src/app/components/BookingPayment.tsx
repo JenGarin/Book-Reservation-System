@@ -37,19 +37,26 @@ export function BookingPayment() {
   const usingBackendApi = backendApi.isEnabled;
   const location = useLocation();
   const navigate = useNavigate();
-  const draft = (location.state as { bookingDraft?: BookingDraft } | null)?.bookingDraft;
+  const locationState = (location.state as { bookingDraft?: BookingDraft; bookingDrafts?: BookingDraft[] } | null) || null;
+  const drafts = Array.isArray(locationState?.bookingDrafts)
+    ? locationState.bookingDrafts
+    : locationState?.bookingDraft
+      ? [locationState.bookingDraft]
+      : [];
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('gcash');
   const [mobileNumber, setMobileNumber] = useState('');
   const [submitting, setSubmitting] = useState(false);
 
   const releaseHoldIfNeeded = async () => {
     if (!usingBackendApi) return;
-    const holdId = String(draft?.bookingHoldId || '').trim();
-    if (!holdId) return;
-    try {
-      await backendApi.releaseBookingHold(holdId);
-    } catch {
-      // Ignore if hold already expired/consumed/released.
+    for (const draft of drafts) {
+      const holdId = String(draft?.bookingHoldId || '').trim();
+      if (!holdId) continue;
+      try {
+        await backendApi.releaseBookingHold(holdId);
+      } catch {
+        // Ignore if hold already expired/consumed/released.
+      }
     }
   };
 
@@ -58,13 +65,12 @@ export function BookingPayment() {
     navigate('/booking');
   };
 
-  const courtName = useMemo(() => {
-    if (!draft) return '';
-    const court = courts.find((c) => c.id === draft.courtId);
-    return court?.name || 'Selected Court';
-  }, [courts, draft]);
+  const totalAmount = useMemo(
+    () => drafts.reduce((sum, item) => sum + Number(item.amount || 0), 0),
+    [drafts],
+  );
 
-  if (!draft || !currentUser) {
+  if (!drafts.length || !currentUser) {
     return (
       <div className="max-w-3xl mx-auto p-6">
         <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl shadow p-6 text-center">
@@ -101,54 +107,60 @@ export function BookingPayment() {
       }
     }
 
-    if (usingBackendApi && draft.bookingHoldId) {
-      try {
-        const dateKey = format(new Date(draft.date), 'yyyy-MM-dd');
-        const holds = await backendApi.getMyBookingHolds({
-          courtId: draft.courtId,
-          date: dateKey,
-        });
-        const hasActiveHold = (Array.isArray(holds) ? holds : []).some(
-          (hold: any) => String(hold?.id || '') === String(draft.bookingHoldId)
-        );
-        if (!hasActiveHold) {
-          toast.error('Your hold expired. Please reselect your booking slot.');
-          navigate('/booking');
-          return;
-        }
-      } catch {
-        toast.error('Unable to validate your booking hold. Please try again.');
-        return;
-      }
-    }
-
     setSubmitting(true);
     try {
-      const bookingId = await createBooking({
-        courtId: draft.courtId,
-        userId: currentUser.id,
-        type: draft.type,
-        date: new Date(draft.date),
-        startTime: draft.startTime,
-        endTime: draft.endTime,
-        duration: draft.duration,
-        status: 'pending',
-        paymentStatus: usingBackendApi ? 'unpaid' : 'paid',
-        amount: draft.amount,
-        checkedIn: false,
-        maxPlayers: draft.maxPlayers,
-        players: draft.players,
-      });
+      const bookingIds: string[] = [];
+      for (const draft of drafts) {
+        if (usingBackendApi && draft.bookingHoldId) {
+          const dateKey = format(new Date(draft.date), 'yyyy-MM-dd');
+          const holds = await backendApi.getMyBookingHolds({
+            courtId: draft.courtId,
+            date: dateKey,
+          });
+          const hasActiveHold = (Array.isArray(holds) ? holds : []).some(
+            (hold: any) => String(hold?.id || '') === String(draft.bookingHoldId),
+          );
+          if (!hasActiveHold) {
+            const failedCourt = courts.find((c) => c.id === draft.courtId)?.name || 'Selected court';
+            toast.error(`${failedCourt} hold expired. Please reselect that slot.`);
+            navigate('/booking');
+            return;
+          }
+        }
+
+        const bookingId = await createBooking({
+          courtId: draft.courtId,
+          userId: currentUser.id,
+          type: draft.type,
+          date: new Date(draft.date),
+          startTime: draft.startTime,
+          endTime: draft.endTime,
+          duration: draft.duration,
+          status: 'pending',
+          paymentStatus: usingBackendApi ? 'unpaid' : 'paid',
+          amount: draft.amount,
+          checkedIn: false,
+          maxPlayers: draft.maxPlayers,
+          players: draft.players,
+        });
+        bookingIds.push(bookingId);
+      }
 
       if (usingBackendApi) {
-        const tx = await backendApi.createPaymentCheckout(bookingId, paymentMethod);
-        const checkoutUrl = String(tx?.checkoutUrl || '').trim();
-        if (checkoutUrl) {
-          window.open(checkoutUrl, '_blank', 'noopener,noreferrer');
+        const checkoutUrls: string[] = [];
+        for (const bookingId of bookingIds) {
+          const tx = await backendApi.createPaymentCheckout(bookingId, paymentMethod);
+          const checkoutUrl = String(tx?.checkoutUrl || '').trim();
+          if (checkoutUrl) checkoutUrls.push(checkoutUrl);
         }
-        toast.success('Payment checkout created. Complete payment in your wallet to finalize booking.');
+        if (checkoutUrls[0]) {
+          window.open(checkoutUrls[0], '_blank', 'noopener,noreferrer');
+        }
+        toast.success(
+          `Payment checkout created for ${bookingIds.length} booking${bookingIds.length === 1 ? '' : 's'}.`,
+        );
       } else {
-        toast.success('Payment successful. Booking request sent to admin for approval.');
+        toast.success(`Booking request${bookingIds.length === 1 ? '' : 's'} sent to admin for approval.`);
       }
       navigate('/my-bookings');
     } catch (error) {
@@ -186,16 +198,22 @@ export function BookingPayment() {
 
         <div className="bg-[#d8ecea] dark:bg-slate-800 rounded-xl p-4 md:p-5 space-y-3 border border-slate-200 dark:border-slate-700">
           <h3 className="text-xl text-slate-900 dark:text-slate-100">Booking Details</h3>
-          <div className="grid grid-cols-2 gap-y-2 text-sm md:text-base text-slate-800 dark:text-slate-200">
-            <span>Court:</span><span className="text-right">{courtName}</span>
-            <span>Date:</span><span className="text-right">{format(new Date(draft.date), 'MMMM d, yyyy')}</span>
-            <span>Time:</span><span className="text-right">{draft.startTime}</span>
-            <span>Duration:</span><span className="text-right">{draft.duration / 60} hour</span>
+          <div className="space-y-2 text-sm md:text-base text-slate-800 dark:text-slate-200">
+            {drafts.map((draft, index) => {
+              const courtName = courts.find((c) => c.id === draft.courtId)?.name || 'Selected Court';
+              return (
+                <div key={`${draft.courtId}-${draft.date}-${draft.startTime}-${index}`} className="rounded-lg bg-white/60 dark:bg-slate-700/50 p-2">
+                  <p className="font-medium">{courtName}</p>
+                  <p>{format(new Date(draft.date), 'MMMM d, yyyy')} | {draft.startTime} - {draft.endTime}</p>
+                  <p>{(draft.duration / 60).toFixed(1).replace(/\.0$/, '')} hour(s) | PHP {draft.amount.toFixed(2)}</p>
+                </div>
+              );
+            })}
           </div>
           <div className="h-px bg-slate-400/40 dark:bg-slate-600/40 my-2" />
           <div className="flex items-center justify-between text-lg md:text-xl text-slate-900 dark:text-slate-100">
             <span className="font-semibold">Amount to Pay:</span>
-            <span className="font-semibold">PHP {draft.amount.toFixed(2)}</span>
+            <span className="font-semibold">PHP {totalAmount.toFixed(2)}</span>
           </div>
         </div>
 
@@ -281,7 +299,7 @@ export function BookingPayment() {
             disabled={submitting}
             className="flex-1 py-2.5 rounded-xl bg-teal-600 text-white hover:bg-teal-700 disabled:opacity-60"
           >
-            {submitting ? 'Processing...' : `Pay PHP ${draft.amount.toFixed(2)}`}
+            {submitting ? 'Processing...' : `Pay PHP ${totalAmount.toFixed(2)}`}
           </button>
         </div>
 
