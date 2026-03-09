@@ -3,9 +3,18 @@ import { publicAnonKey } from '../../utils/supabase/info';
 
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL || 'https://hrwtrbrzttdaxyymeugr.supabase.co';
 const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY || publicAnonKey;
+const authStorageKey = 'ventra_supabase_auth';
 
 if (!import.meta.env.VITE_SUPABASE_URL || !import.meta.env.VITE_SUPABASE_ANON_KEY) {
   console.info('Using default Supabase configuration from info.tsx');
 }
 
-export const supabase = createClient(supabaseUrl, supabaseAnonKey);
+export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
+  auth: {
+    flowType: 'pkce',
+    detectSessionInUrl: true,
+    persistSession: true,
+    autoRefreshToken: true,
+    storageKey: authStorageKey,
+  },
+});

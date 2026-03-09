@@ -210,14 +210,37 @@ export const backendApi = {
     return session.user;
   },
 
-  async signup(email: string, password: string, role: Role = "player") {
+  async signup(
+    email: string,
+    password: string,
+    role: Role = "player",
+    payload: {
+      name?: string;
+      phone?: string;
+      coachProfile?: string;
+      coachExpertise?: string[];
+      verificationMethod?: "certification" | "license" | "experience" | "other";
+      verificationDocumentName?: string;
+      verificationId?: string;
+      verificationNotes?: string;
+    } = {},
+  ) {
     ensureBackendEnabled();
     const data = await request<any>("/auth/signup", {
       method: "POST",
       auth: false,
-      body: { email, password, role },
+      body: { email, password, role, ...payload },
     });
-    return mapUser(data);
+    if (data?.pending === true) {
+      return {
+        pending: true,
+        message: String(data?.message || "Coach registration submitted and pending admin verification."),
+      };
+    }
+    return {
+      pending: false,
+      user: mapUser(data),
+    };
   },
 
   async logout() {

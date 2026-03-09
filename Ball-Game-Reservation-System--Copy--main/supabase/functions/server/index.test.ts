@@ -1666,28 +1666,345 @@ Deno.test("cannot approve coach verification that is not pending", async () => {
   assertEquals(approvePayload.error.code, "CONFLICT");
 });
 
+Deno.test("coach signup creates pending registration and blocks coach login until approved", async () => {
+  __resetForTests();
+
+  const signupRes = await app.request("http://local.test/api/v1/auth/signup", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      email: "coach-pending@court.com",
+      password: "coach123",
+      role: "coach",
+      name: "Pending Coach",
+      coachProfile: "Player development specialist",
+      coachExpertise: ["Basketball"],
+      verificationMethod: "certification",
+      verificationDocumentName: "National Coaching Certificate",
+      verificationId: "CERT-123",
+    }),
+  });
+  const signupPayload = await json(signupRes);
+  assertEquals(signupRes.status, 200);
+  assertEquals(signupPayload.data.pending, true);
+  assertEquals(signupPayload.data.role, "coach");
+
+  const statusRes = await app.request("http://local.test/api/v1/auth/coach-registration-status", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ email: "coach-pending@court.com" }),
+  });
+  const statusPayload = await json(statusRes);
+  assertEquals(statusRes.status, 200);
+  assertEquals(statusPayload.data.status, "pending");
+  assertEquals(statusPayload.data.canWithdraw, true);
+
+  const loginRes = await app.request("http://local.test/api/v1/auth/login", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      email: "coach-pending@court.com",
+      password: "coach123",
+      expectedRole: "coach",
+    }),
+  });
+  const loginPayload = await json(loginRes);
+  assertEquals(loginRes.status, 403);
+  assertEquals(loginPayload.error.code, "COACH_APPLICATION_PENDING");
+});
+
+Deno.test("coach applicant can update and withdraw pending registration", async () => {
+  __resetForTests();
+
+  const signupRes = await app.request("http://local.test/api/v1/auth/signup", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      email: "coach-withdraw@court.com",
+      password: "coach123",
+      role: "coach",
+      name: "Withdraw Coach",
+      verificationMethod: "experience",
+      verificationDocumentName: "Resume",
+    }),
+  });
+  assertEquals(signupRes.status, 200);
+
+  const updateRes = await app.request("http://local.test/api/v1/auth/coach-registration-update", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      email: "coach-withdraw@court.com",
+      password: "coach123",
+      name: "Updated Withdraw Coach",
+      coachProfile: "Updated profile",
+      coachExpertise: ["Tennis", "Footwork"],
+      verificationMethod: "license",
+      verificationDocumentName: "Updated License",
+      verificationId: "LIC-2026",
+    }),
+  });
+  const updatePayload = await json(updateRes);
+  assertEquals(updateRes.status, 200);
+  assertEquals(updatePayload.data.name, "Updated Withdraw Coach");
+  assertEquals(updatePayload.data.verificationMethod, "license");
+
+  const withdrawRes = await app.request("http://local.test/api/v1/auth/coach-registration-withdraw", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      email: "coach-withdraw@court.com",
+      password: "coach123",
+    }),
+  });
+  const withdrawPayload = await json(withdrawRes);
+  assertEquals(withdrawRes.status, 200);
+  assertEquals(withdrawPayload.data.withdrawn, true);
+
+  const statusRes = await app.request("http://local.test/api/v1/auth/coach-registration-status", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ email: "coach-withdraw@court.com" }),
+  });
+  const statusPayload = await json(statusRes);
+  assertEquals(statusRes.status, 200);
+  assertEquals(statusPayload.data.status, "none");
+});
+
+Deno.test("admin can approve queued coach registration and coach can then log in", async () => {
+  __resetForTests();
+
+  const signupRes = await app.request("http://local.test/api/v1/auth/signup", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      email: "coach-approved@court.com",
+      password: "coach123",
+      role: "coach",
+      name: "Approved Coach",
+      coachProfile: "Approved profile",
+      coachExpertise: ["Basketball"],
+      verificationMethod: "certification",
+      verificationDocumentName: "Coach Cert",
+    }),
+  });
+  assertEquals(signupRes.status, 200);
+
+  const listRes = await authed("/api/v1/admin/coach-registrations?page=1&limit=20", "admin-1", "admin", "GET");
+  const listPayload = await json(listRes);
+  assertEquals(listRes.status, 200);
+  const registration = (listPayload.data as any[]).find((item) => item.email === "coach-approved@court.com");
+  assertEquals(Boolean(registration), true);
+
+  const approveRes = await authed(
+    `/api/v1/admin/coaches/coach-reg-${registration.id}/verification/approve`,
+    "admin-1",
+    "admin",
+    "POST",
+    { notes: "Verified and approved" },
+  );
+  const approvePayload = await json(approveRes);
+  assertEquals(approveRes.status, 200);
+  assertEquals(approvePayload.data.role, "coach");
+  assertEquals(approvePayload.data.coachVerificationStatus, "verified");
+
+  const loginRes = await app.request("http://local.test/api/v1/auth/login", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      email: "coach-approved@court.com",
+      password: "coach123",
+      expectedRole: "coach",
+    }),
+  });
+  const loginPayload = await json(loginRes);
+  assertEquals(loginRes.status, 200);
+  assertEquals(loginPayload.data.user.role, "coach");
+});
+
+Deno.test("rejected coach registration can be resubmitted and reopened by admin", async () => {
+  __resetForTests();
+
+  const signupRes = await app.request("http://local.test/api/v1/auth/signup", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      email: "coach-resubmit@court.com",
+      password: "coach123",
+      role: "coach",
+      name: "Resubmit Coach",
+      verificationMethod: "other",
+      verificationDocumentName: "Portfolio",
+    }),
+  });
+  assertEquals(signupRes.status, 200);
+
+  const listRes = await authed("/api/v1/admin/coach-registrations?page=1&limit=20", "admin-1", "admin", "GET");
+  const listPayload = await json(listRes);
+  const registration = (listPayload.data as any[]).find((item) => item.email === "coach-resubmit@court.com");
+  assertEquals(Boolean(registration), true);
+
+  const rejectRes = await authed(
+    `/api/v1/admin/coaches/coach-reg-${registration.id}/verification/reject`,
+    "admin-1",
+    "admin",
+    "POST",
+    { reason: "Need additional documents" },
+  );
+  const rejectPayload = await json(rejectRes);
+  assertEquals(rejectRes.status, 200);
+  assertEquals(rejectPayload.data.coachVerificationStatus, "rejected");
+
+  const rejectedLoginRes = await app.request("http://local.test/api/v1/auth/login", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      email: "coach-resubmit@court.com",
+      password: "coach123",
+      expectedRole: "coach",
+    }),
+  });
+  const rejectedLoginPayload = await json(rejectedLoginRes);
+  assertEquals(rejectedLoginRes.status, 403);
+  assertEquals(rejectedLoginPayload.error.code, "COACH_APPLICATION_REJECTED");
+
+  const resubmitRes = await app.request("http://local.test/api/v1/auth/coach-registration-resubmit", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      email: "coach-resubmit@court.com",
+      password: "coach123",
+      name: "Resubmit Coach",
+      verificationMethod: "license",
+      verificationDocumentName: "Renewed License",
+    }),
+  });
+  const resubmitPayload = await json(resubmitRes);
+  assertEquals(resubmitRes.status, 200);
+  assertEquals(resubmitPayload.data.status, "pending");
+
+  const refreshListRes = await authed("/api/v1/admin/coach-registrations?page=1&limit=20", "admin-1", "admin", "GET");
+  const refreshListPayload = await json(refreshListRes);
+  const refreshedRegistration = (refreshListPayload.data as any[]).find((item) => item.email === "coach-resubmit@court.com");
+  assertEquals(Boolean(refreshedRegistration), true);
+
+  const reopenRes = await authed(
+    `/api/v1/admin/coach-registrations/${refreshedRegistration.id}/reopen`,
+    "admin-1",
+    "admin",
+    "POST",
+    { note: "Moved back to review queue" },
+  );
+  const reopenPayload = await json(reopenRes);
+  assertEquals(reopenRes.status, 200);
+  assertEquals(reopenPayload.data.status, "pending");
+});
+
+Deno.test("admin coach registration endpoints return summary detail and allow delete", async () => {
+  __resetForTests();
+
+  const firstSignupRes = await app.request("http://local.test/api/v1/auth/signup", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      email: "coach-summary-1@court.com",
+      password: "coach123",
+      role: "coach",
+      name: "Coach Summary One",
+      verificationMethod: "certification",
+      verificationDocumentName: "Summary Cert One",
+    }),
+  });
+  assertEquals(firstSignupRes.status, 200);
+
+  const secondSignupRes = await app.request("http://local.test/api/v1/auth/signup", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      email: "coach-summary-2@court.com",
+      password: "coach123",
+      role: "coach",
+      name: "Coach Summary Two",
+      verificationMethod: "experience",
+      verificationDocumentName: "Summary Resume Two",
+    }),
+  });
+  assertEquals(secondSignupRes.status, 200);
+
+  const listRes = await authed(
+    "/api/v1/admin/coach-registrations?status=pending&search=summary&page=1&limit=20",
+    "staff-1",
+    "staff",
+    "GET",
+  );
+  const listPayload = await json(listRes);
+  assertEquals(listRes.status, 200);
+  assertEquals(Array.isArray(listPayload.data), true);
+  assertEquals(listPayload.data.length >= 2, true);
+  assertEquals(listPayload.meta.counts.pending >= 2, true);
+
+  const target = (listPayload.data as any[]).find((item) => item.email === "coach-summary-1@court.com");
+  assertEquals(Boolean(target), true);
+
+  const detailRes = await authed(
+    `/api/v1/admin/coach-registrations/${target.id}`,
+    "staff-1",
+    "staff",
+    "GET",
+  );
+  const detailPayload = await json(detailRes);
+  assertEquals(detailRes.status, 200);
+  assertEquals(detailPayload.data.email, "coach-summary-1@court.com");
+  assertEquals(typeof detailPayload.data.password, "undefined");
+
+  const summaryRes = await authed("/api/v1/admin/coach-registrations/summary", "staff-1", "staff", "GET");
+  const summaryPayload = await json(summaryRes);
+  assertEquals(summaryRes.status, 200);
+  assertEquals(summaryPayload.data.pending >= 2, true);
+  assertEquals(summaryPayload.data.total >= 2, true);
+
+  const deleteRes = await authed(
+    `/api/v1/admin/coach-registrations/${target.id}`,
+    "admin-1",
+    "admin",
+    "DELETE",
+  );
+  const deletePayload = await json(deleteRes);
+  assertEquals(deleteRes.status, 200);
+  assertEquals(deletePayload.data.deleted, true);
+
+  const missingDetailRes = await authed(
+    `/api/v1/admin/coach-registrations/${target.id}`,
+    "staff-1",
+    "staff",
+    "GET",
+  );
+  const missingDetailPayload = await json(missingDetailRes);
+  assertEquals(missingDetailRes.status, 404);
+  assertEquals(missingDetailPayload.error.code, "NOT_FOUND");
+});
+
 Deno.test("public coaches endpoint returns only verified by default", async () => {
   __resetForTests();
   await app.request("http://local.test/api/v1/courts");
 
-  const createCoachRes = await app.request("http://local.test/api/v1/auth/signup", {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ email: "newcoach@court.com", password: "coach12", role: "coach" }),
+  const promoteRes = await authed("/api/v1/admin/users/player-1", "admin-1", "admin", "PATCH", {
+    role: "coach",
+    name: "Unverified Coach",
   });
-  const createdCoach = await json(createCoachRes);
-  assertEquals(createCoachRes.status, 200);
-  const newCoachId = createdCoach.data.id as string;
+  const promotePayload = await json(promoteRes);
+  assertEquals(promoteRes.status, 200);
+  assertEquals(promotePayload.data.role, "coach");
 
   const coachesRes = await app.request("http://local.test/api/v1/coaches");
   const coachesPayload = await json(coachesRes);
   assertEquals(coachesRes.status, 200);
-  assertEquals(coachesPayload.data.some((coach: { id: string }) => coach.id === newCoachId), false);
+  assertEquals(coachesPayload.data.some((coach: { id: string }) => coach.id === "player-1"), false);
 
   const allCoachesRes = await app.request("http://local.test/api/v1/coaches?includeUnverified=true");
   const allCoachesPayload = await json(allCoachesRes);
   assertEquals(allCoachesRes.status, 200);
-  assertEquals(allCoachesPayload.data.some((coach: { id: string }) => coach.id === newCoachId), true);
+  assertEquals(allCoachesPayload.data.some((coach: { id: string }) => coach.id === "player-1"), true);
 });
 
 Deno.test("owner can fetch booking receipt", async () => {
@@ -3785,6 +4102,54 @@ Deno.test("admin can import snapshot data", async () => {
   const config = await json(configRes);
   assertEquals(configRes.status, 200);
   assertEquals(config.data.bookingInterval, 30);
+});
+
+Deno.test("admin data export and import include coach registrations", async () => {
+  __resetForTests();
+
+  const signupRes = await app.request("http://local.test/api/v1/auth/signup", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      email: "coach-backup@court.com",
+      password: "coach123",
+      role: "coach",
+      name: "Coach Backup",
+      verificationMethod: "license",
+      verificationDocumentName: "Backup License",
+      verificationId: "BK-2026",
+    }),
+  });
+  assertEquals(signupRes.status, 200);
+
+  const exportRes = await authed("/api/v1/admin/data/export", "admin-1", "admin", "GET");
+  const exportPayload = await json(exportRes);
+  assertEquals(exportRes.status, 200);
+  assertEquals(Array.isArray(exportPayload.data.data.coachRegistrations), true);
+  assertEquals(
+    exportPayload.data.data.coachRegistrations.some((item: { email: string }) => item.email === "coach-backup@court.com"),
+    true,
+  );
+
+  const snapshot = exportPayload.data.data;
+  const resetRes = await authed("/api/v1/admin/data/reset", "admin-1", "admin", "POST", {});
+  assertEquals(resetRes.status, 200);
+
+  const importRes = await authed("/api/v1/admin/data/import", "admin-1", "admin", "POST", {
+    overwrite: true,
+    data: snapshot,
+  });
+  const importPayload = await json(importRes);
+  assertEquals(importRes.status, 200);
+  assertEquals(importPayload.data.imported.coachRegistrations >= 1, true);
+
+  const listRes = await authed("/api/v1/admin/coach-registrations?page=1&limit=50", "admin-1", "admin", "GET");
+  const listPayload = await json(listRes);
+  assertEquals(listRes.status, 200);
+  assertEquals(
+    (listPayload.data as any[]).some((item) => item.email === "coach-backup@court.com"),
+    true,
+  );
 });
 
 Deno.test("booking create is idempotent with same key and payload", async () => {

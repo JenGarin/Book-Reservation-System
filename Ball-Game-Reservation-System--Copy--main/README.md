@@ -44,6 +44,23 @@ To enable it, set:
 - `VITE_SUPABASE_URL=<your-supabase-url>`
 - `VITE_SUPABASE_ANON_KEY=<your-anon-key>`
 
+For web OAuth, configure these URLs as well:
+
+1. In Supabase `Authentication -> URL Configuration`
+   - `Site URL`: `http://localhost:5173`
+   - Additional Redirect URL: `http://localhost:5173/auth/callback`
+
+2. In Google Cloud Console for your OAuth client
+   - Authorized redirect URI: `https://<your-project-ref>.supabase.co/auth/v1/callback`
+
+3. In Meta for Developers for Facebook Login
+   - Valid OAuth Redirect URI: `https://<your-project-ref>.supabase.co/auth/v1/callback`
+
+Important:
+- Google/Facebook must be enabled in `Supabase -> Authentication -> Providers`.
+- The provider callback in Google/Meta is the Supabase callback, not your local Vite URL.
+- Your browser app redirect stays `http://localhost:5173/auth/callback`.
+
 ## Optional: Use Backend API
 
 Frontend can run in API-backed mode (for requests, notifications, and subscriptions) by setting:

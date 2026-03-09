@@ -1,8 +1,12 @@
+import { useEffect } from 'react';
 import { BrowserRouter, Routes, Route, Navigate, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { ThemeProvider } from 'next-themes';
 import { Toaster } from 'sonner';
+import { toast } from 'sonner';
 import { AppProvider, useApp } from '@/context/AppContext';
 import { Login } from './components/Login';
+import { AuthCallback } from './components/AuthCallback';
+import { OAuthSignupConfirmation } from './components/OAuthSignupConfirmation';
 import { RoleSelection } from './components/RoleSelection';
 import { SignUp } from './components/SignUp';
 import { ForgotPassword } from './components/ForgotPassword';
@@ -32,13 +36,28 @@ import { CoachSessions } from './components/CoachSessions';
 import { PendingBookings } from './components/PendingBookings';
 import { HireCoachView } from './components/HireCoachView';
 
+const ACCOUNT_CREATED_NOTICE_KEY = 'ventra_account_created_notice';
+
 function DashboardLayout() {
   const { currentUser } = useApp();
   const location = useLocation();
   const navigate = useNavigate();
+  const pendingOauthConfirmation = localStorage.getItem('ventra_oauth_confirmation_pending');
+
+  useEffect(() => {
+    if (!currentUser) return;
+    const notice = localStorage.getItem(ACCOUNT_CREATED_NOTICE_KEY);
+    if (!notice) return;
+    toast.success(notice);
+    localStorage.removeItem(ACCOUNT_CREATED_NOTICE_KEY);
+  }, [currentUser]);
 
   if (!currentUser) {
     return <Navigate to="/login" replace />;
+  }
+
+  if (pendingOauthConfirmation && pendingOauthConfirmation === currentUser.email.toLowerCase()) {
+    return <Navigate to="/auth/confirm" replace />;
   }
 
   const currentView = location.pathname.split('/')[1] || 'dashboard';
@@ -98,6 +117,8 @@ export default function App() {
             <Route path="/" element={<LandingPage />} />
             <Route path="/login" element={<RoleSelection />} />
             <Route path="/sign-in" element={<Login />} />
+            <Route path="/auth/callback" element={<AuthCallback />} />
+            <Route path="/auth/confirm" element={<OAuthSignupConfirmation />} />
             <Route path="/signup" element={<SignUp />} />
             <Route path="/forgot-password" element={<ForgotPassword />} />
             <Route path="/terms-of-service" element={<TermsOfService />} />

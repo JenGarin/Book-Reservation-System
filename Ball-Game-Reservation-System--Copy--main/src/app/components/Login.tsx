@@ -4,19 +4,22 @@
 // Player: Book courts, view bookings, and manage their profile.
 // Coach: Book courts for training, manage sessions, and view their schedule.
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useNavigate, Link, useLocation } from 'react-router-dom';
 import { useApp } from '@/context/AppContext';
 import { LogIn, Eye, EyeOff, UserPlus } from 'lucide-react';
+
+const ACCOUNT_CREATED_NOTICE_KEY = 'ventra_account_created_notice';
 
 export function Login() {
   const [email, setEmail] = useState(localStorage.getItem('rememberedEmail') || '');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
+  const [successNotice, setSuccessNotice] = useState('');
   const [loading, setLoading] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
 
-  const { login, signInWithProvider } = useApp();
+  const { currentUser, login, signInWithProvider } = useApp();
   const navigate = useNavigate();
   const location = useLocation();
   const [rememberMe, setRememberMe] = useState(!!localStorage.getItem('rememberedEmail'));
@@ -24,8 +27,33 @@ export function Login() {
   const selectedRole =
     roleFromQuery ||
     (location.state as { role?: string } | null)?.role;
+  const authError = (location.state as { authError?: string } | null)?.authError;
+  const accountCreatedMessage = (location.state as { accountCreatedMessage?: string } | null)?.accountCreatedMessage;
   const roleLabel = selectedRole ? selectedRole.toLowerCase() : 'player';
   const roleArticle = roleLabel === 'admin' ? 'an' : 'a';
+  const pendingOauthConfirmation = localStorage.getItem('ventra_oauth_confirmation_pending');
+
+  useEffect(() => {
+    if (!authError) return;
+    setError(authError);
+  }, [authError]);
+
+  useEffect(() => {
+    const storedNotice = localStorage.getItem(ACCOUNT_CREATED_NOTICE_KEY);
+    const nextNotice = accountCreatedMessage || storedNotice || '';
+    if (!nextNotice) return;
+    setSuccessNotice(nextNotice);
+    localStorage.removeItem(ACCOUNT_CREATED_NOTICE_KEY);
+  }, [accountCreatedMessage]);
+
+  useEffect(() => {
+    if (!currentUser) return;
+    if (pendingOauthConfirmation && pendingOauthConfirmation === currentUser.email.toLowerCase()) {
+      navigate('/auth/confirm', { replace: true });
+      return;
+    }
+    navigate('/dashboard', { replace: true });
+  }, [currentUser, navigate, pendingOauthConfirmation]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -54,7 +82,7 @@ export function Login() {
   const handleSocialSignIn = async (provider: 'google' | 'facebook') => {
     setError('');
     setLoading(true);
-    const result = await signInWithProvider(provider, roleLabel);
+    const result = await signInWithProvider(provider, roleLabel, 'signin');
     if (!result.success) {
       setError(result.message || 'Unable to continue with social sign-in.');
       setLoading(false);
@@ -79,6 +107,11 @@ export function Login() {
         </div>
 
         <form onSubmit={handleSubmit} className="space-y-3" aria-label="Login form">
+          {successNotice && (
+            <div className="rounded-lg border border-green-700/20 bg-green-100/90 px-4 py-3 text-sm text-green-900 shadow-sm" role="status">
+              {successNotice}
+            </div>
+          )}
           <div>
             <label htmlFor="email" className="block text-sm mb-2 text-slate-900">Email</label>
             <input

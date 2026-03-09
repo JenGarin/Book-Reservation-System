@@ -104,6 +104,7 @@ type AdminDataSnapshot = {
   subscriptions: ApiSubscription[];
   notifications: ApiNotification[];
   coachApplications: ApiCoachApplication[];
+  coachRegistrations: ApiCoachRegistration[];
   config: ApiFacilityConfig;
 };
 
@@ -118,6 +119,37 @@ type ApiCoachApplication = {
   reviewNote?: string;
   createdAt: string;
   updatedAt?: string;
+};
+
+type ApiCoachRegistration = {
+  id: string;
+  email: string;
+  password: string;
+  name: string;
+  phone?: string;
+  coachProfile?: string;
+  coachExpertise?: string[];
+  verificationMethod: "certification" | "license" | "experience" | "other";
+  verificationDocumentName: string;
+  verificationId?: string;
+  verificationNotes?: string;
+  status: "pending" | "approved" | "rejected";
+  reviewNote?: string;
+  createdAt: string;
+  updatedAt?: string;
+};
+
+type ApiCoachRegistrationSafe = Omit<ApiCoachRegistration, "password">;
+
+type CoachRegistrationDraft = {
+  name: string;
+  phone?: string;
+  coachProfile?: string;
+  coachExpertise: string[];
+  verificationMethod: ApiCoachRegistration["verificationMethod"] | "";
+  verificationDocumentName: string;
+  verificationId?: string;
+  verificationNotes?: string;
 };
 
 type ApiAuditLog = {
@@ -220,6 +252,86 @@ const API_BASE = "/api/v1";
 
 const nowIso = () => new Date().toISOString();
 const id = () => (globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
+const coachRegistrationPublicId = (registrationId: string) => `coach-reg-${registrationId}`;
+const coachRegistrationInternalId = (value: string) => {
+  const raw = String(value || "").trim();
+  return raw.startsWith("coach-reg-") ? raw.slice("coach-reg-".length) : raw;
+};
+const mapCoachRegistrationToQueueUser = (registration: ApiCoachRegistration): ApiUser => ({
+  id: coachRegistrationPublicId(registration.id),
+  email: registration.email,
+  name: registration.name,
+  role: "coach",
+  phone: registration.phone,
+  coachProfile: registration.coachProfile,
+  coachExpertise: registration.coachExpertise || [],
+  coachVerificationStatus: registration.status === "approved" ? "verified" : registration.status,
+  coachVerificationMethod: registration.verificationMethod,
+  coachVerificationDocumentName: registration.verificationDocumentName,
+  coachVerificationId: registration.verificationId,
+  coachVerificationNotes: registration.reviewNote || registration.verificationNotes,
+  coachVerificationSubmittedAt: registration.createdAt,
+  createdAt: registration.createdAt,
+});
+const sanitizeCoachRegistration = (registration: ApiCoachRegistration): ApiCoachRegistrationSafe => {
+  const { password: _password, ...safe } = registration;
+  return safe;
+};
+const normalizeCoachRegistrationEmail = (value: unknown) => String(value || "").trim().toLowerCase();
+const sortCoachRegistrationsNewest = (items: ApiCoachRegistration[]) =>
+  [...items].sort(
+    (a, b) => new Date(b.updatedAt || b.createdAt).getTime() - new Date(a.updatedAt || a.createdAt).getTime(),
+  );
+const parseCoachExpertiseInput = (raw: unknown, fallback: string[] = []) =>
+  Array.isArray(raw)
+    ? raw.map((item: unknown) => String(item || "").trim()).filter(Boolean)
+    : String(raw || "")
+        .split(",")
+        .map((item) => item.trim())
+        .filter(Boolean)
+        .filter((item) => item.length > 0)
+        .concat(fallback.length > 0 && !raw ? fallback : [])
+        .filter((item, index, arr) => arr.indexOf(item) === index);
+const parseCoachRegistrationDraft = (
+  body: any,
+  fallback: Partial<ApiCoachRegistration> = {},
+): CoachRegistrationDraft => ({
+  name: String(body?.name || fallback.name || "").trim(),
+  phone: String(body?.phone || fallback.phone || "").trim() || undefined,
+  coachProfile: String(body?.coachProfile || fallback.coachProfile || "").trim() || undefined,
+  coachExpertise: parseCoachExpertiseInput(body?.coachExpertise, Array.isArray(fallback.coachExpertise) ? fallback.coachExpertise : []),
+  verificationMethod: String(
+    body?.verificationMethod || body?.coachVerificationMethod || fallback.verificationMethod || "",
+  ).trim() as CoachRegistrationDraft["verificationMethod"],
+  verificationDocumentName: String(
+    body?.verificationDocumentName || body?.documentName || fallback.verificationDocumentName || "",
+  ).trim(),
+  verificationId: String(body?.verificationId || fallback.verificationId || "").trim() || undefined,
+  verificationNotes: String(body?.verificationNotes || body?.notes || fallback.verificationNotes || "").trim() || undefined,
+});
+const validateCoachRegistrationDraft = (draft: CoachRegistrationDraft) => {
+  if (!draft.name) return "Name is required for coach registration.";
+  if (!["certification", "license", "experience", "other"].includes(draft.verificationMethod || "")) {
+    return "verificationMethod must be one of certification, license, experience, or other.";
+  }
+  if (!draft.verificationDocumentName) {
+    return "verificationDocumentName is required for coach registration.";
+  }
+  return null;
+};
+const getCoachRegistrations = async () => (await kv.getByPrefix("coachreg:")) as ApiCoachRegistration[];
+const findLatestCoachRegistrationByEmail = (
+  registrations: ApiCoachRegistration[],
+  email: string,
+  statuses?: ApiCoachRegistration["status"][],
+) =>
+  sortCoachRegistrationsNewest(
+    registrations.filter(
+      (item) =>
+        item.email.toLowerCase() === normalizeCoachRegistrationEmail(email) &&
+        (!statuses || statuses.includes(item.status)),
+    ),
+  )[0];
 const paymentDeadlineMinutes = () => {
   const fallback = 120;
   try {
@@ -1129,6 +1241,26 @@ app.post(`${API_BASE}/auth/login`, async (c) => {
   const users = (await kv.getByPrefix("user:")) as ApiUser[];
   const user = users.find((u) => u.email.toLowerCase() === email);
   if (!user) {
+    if (expectedRole === "coach") {
+      const registrations = (await kv.getByPrefix("coachreg:")) as ApiCoachRegistration[];
+      const registration = registrations.find((item) => item.email.toLowerCase() === email);
+      if (registration?.status === "pending") {
+        return jsonErr(
+          c,
+          403,
+          "COACH_APPLICATION_PENDING",
+          "Coach registration is pending admin approval.",
+        );
+      }
+      if (registration?.status === "rejected") {
+        return jsonErr(
+          c,
+          403,
+          "COACH_APPLICATION_REJECTED",
+          "Coach registration was rejected. Please submit a new registration request.",
+        );
+      }
+    }
     await writeAuditLog({
       action: "auth_login_failed",
       entityType: "auth",
@@ -1203,18 +1335,19 @@ app.post(`${API_BASE}/auth/signup`, async (c) => {
   if (!isRole(roleRaw)) {
     return jsonErr(c, 400, "VALIDATION_ERROR", "Invalid role.");
   }
-  const role = roleRaw as Role;
-  if ((role === "admin" || role === "staff") && !allowPrivilegedSignup()) {
+  const requestedRole = roleRaw as Role;
+  if ((requestedRole === "admin" || requestedRole === "staff") && !allowPrivilegedSignup()) {
     await writeAuditLog({
       action: "auth_signup_failed",
       entityType: "auth",
       entityId: email || "unknown",
       actorId: "anonymous",
       actorRole: "player",
-      metadata: { reason: "privileged_role_forbidden", role, email, requestId: requestIdFromContext(c) },
+      metadata: { reason: "privileged_role_forbidden", role: requestedRole, email, requestId: requestIdFromContext(c) },
     });
     return jsonErr(c, 403, "FORBIDDEN", "Public signup cannot create admin or staff accounts.");
   }
+  const role: Role = requestedRole;
   const users = (await kv.getByPrefix("user:")) as ApiUser[];
   if (users.some((u) => u.email.toLowerCase() === email)) {
     await writeAuditLog({
@@ -1223,9 +1356,81 @@ app.post(`${API_BASE}/auth/signup`, async (c) => {
       entityId: email,
       actorId: "anonymous",
       actorRole: "player",
-      metadata: { reason: "email_exists", email, role, requestId: requestIdFromContext(c) },
+      metadata: { reason: "email_exists", email, requestedRole, requestId: requestIdFromContext(c) },
     });
     return jsonErr(c, 409, "CONFLICT", "Email already exists.");
+  }
+  if (role === "coach") {
+    const draft = parseCoachRegistrationDraft(body);
+    const draftError = validateCoachRegistrationDraft(draft);
+    if (draftError) return jsonErr(c, 400, "VALIDATION_ERROR", draftError);
+    const registrations = await getCoachRegistrations();
+    const existingPending = findLatestCoachRegistrationByEmail(registrations, email, ["pending"]);
+    if (existingPending) {
+      return jsonErr(c, 409, "CONFLICT", "A coach registration request for this email is already pending.");
+    }
+    const existingRejected = findLatestCoachRegistrationByEmail(registrations, email, ["rejected"]);
+    if (existingRejected) {
+      const updatedRegistration: ApiCoachRegistration = {
+        ...existingRejected,
+        password,
+        name: draft.name,
+        phone: draft.phone,
+        coachProfile: draft.coachProfile,
+        coachExpertise: draft.coachExpertise,
+        verificationMethod: draft.verificationMethod as ApiCoachRegistration["verificationMethod"],
+        verificationDocumentName: draft.verificationDocumentName,
+        verificationId: draft.verificationId,
+        verificationNotes: draft.verificationNotes,
+        status: "pending",
+        reviewNote: undefined,
+        updatedAt: nowIso(),
+      };
+      await kv.set(`coachreg:${updatedRegistration.id}`, updatedRegistration);
+      await writeAuditLog({
+        action: "coach_registration_resubmitted",
+        entityType: "coach_registration",
+        entityId: updatedRegistration.id,
+        actorId: "anonymous",
+        actorRole: "player",
+        metadata: { email, requestId: requestIdFromContext(c) },
+      });
+      return jsonOk(c, {
+        pending: true,
+        role: "coach",
+        message: "Coach registration resubmitted and pending admin verification.",
+      });
+    }
+    const registration: ApiCoachRegistration = {
+      id: id(),
+      email,
+      password,
+      name: draft.name,
+      phone: draft.phone,
+      coachProfile: draft.coachProfile,
+      coachExpertise: draft.coachExpertise,
+      verificationMethod: draft.verificationMethod as ApiCoachRegistration["verificationMethod"],
+      verificationDocumentName: draft.verificationDocumentName,
+      verificationId: draft.verificationId,
+      verificationNotes: draft.verificationNotes,
+      status: "pending",
+      createdAt: nowIso(),
+      updatedAt: nowIso(),
+    };
+    await kv.set(`coachreg:${registration.id}`, registration);
+    await writeAuditLog({
+      action: "coach_registration_submitted",
+      entityType: "coach_registration",
+      entityId: registration.id,
+      actorId: "anonymous",
+      actorRole: "player",
+      metadata: { email, requestId: requestIdFromContext(c) },
+    });
+    return jsonOk(c, {
+      pending: true,
+      role: "coach",
+      message: "Coach registration submitted and pending admin verification.",
+    });
   }
   const newUser: ApiUser = {
     id: id(),
@@ -1242,7 +1447,7 @@ app.post(`${API_BASE}/auth/signup`, async (c) => {
     entityId: newUser.id,
     actorId: newUser.id,
     actorRole: newUser.role,
-    metadata: { email: newUser.email, requestId: requestIdFromContext(c) },
+    metadata: { email: newUser.email, roleAssigned: role, requestedRole, requestId: requestIdFromContext(c) },
   });
   return jsonOk(c, newUser);
 });
@@ -1267,6 +1472,8 @@ app.post(`${API_BASE}/auth/reset-password`, async (c) => {
 
   const users = (await kv.getByPrefix("user:")) as ApiUser[];
   const user = users.find((u) => u.email.toLowerCase() === email) || null;
+  const registrations = await getCoachRegistrations();
+  const latestRegistration = findLatestCoachRegistrationByEmail(registrations, email);
   await writeAuditLog({
     action: "auth_password_reset_requested",
     entityType: "auth",
@@ -1276,14 +1483,211 @@ app.post(`${API_BASE}/auth/reset-password`, async (c) => {
     metadata: {
       email,
       userExists: Boolean(user),
+      coachRegistrationStatus: latestRegistration?.status || null,
       requestId: requestIdFromContext(c),
     },
   });
 
   return jsonOk(c, {
     sent: true,
-    message: "If an account with this email exists, reset instructions have been sent.",
+    message:
+      user
+        ? "If an account with this email exists, reset instructions have been sent."
+        : latestRegistration?.status === "pending"
+          ? "Coach registration is still pending approval. Password reset becomes available after account approval."
+          : "If an account with this email exists, reset instructions have been sent.",
   });
+});
+
+app.post(`${API_BASE}/auth/coach-registration-status`, async (c) => {
+  const statusLimit = rateLimitConfig("auth_coach_registration_status", { max: 20, windowSeconds: 60 });
+  const statusRateErr = await enforceRateLimit(c, {
+    scope: "auth_coach_registration_status",
+    key: requestClientKey(c),
+    max: statusLimit.max,
+    windowSeconds: statusLimit.windowSeconds,
+  });
+  if (statusRateErr) return statusRateErr;
+
+  const body = await c.req.json().catch(() => ({}));
+  const email = String(body?.email || "").trim().toLowerCase();
+  if (!email) return jsonErr(c, 400, "VALIDATION_ERROR", "Email is required.");
+  if (!isValidEmail(email)) return jsonErr(c, 400, "VALIDATION_ERROR", "Email must be a valid address.");
+
+  const users = (await kv.getByPrefix("user:")) as ApiUser[];
+  const user = users.find((item) => item.email.toLowerCase() === email) || null;
+  if (user && user.role === "coach") {
+    return jsonOk(c, {
+      status: "approved",
+      hasAccount: true,
+      message: "Coach account is active.",
+    });
+  }
+
+  const registrations = await getCoachRegistrations();
+  const registration = findLatestCoachRegistrationByEmail(registrations, email);
+
+  if (!registration) {
+    return jsonOk(c, {
+      status: "none",
+      hasAccount: false,
+      message: "No coach registration found for this email.",
+    });
+  }
+
+  return jsonOk(c, {
+    status: registration.status,
+    hasAccount: false,
+    canWithdraw: registration.status === "pending",
+    reviewNote: registration.reviewNote || null,
+    updatedAt: registration.updatedAt || registration.createdAt,
+    message:
+      registration.status === "pending"
+        ? "Coach registration is pending admin approval."
+        : registration.status === "rejected"
+          ? "Coach registration was rejected."
+          : "Coach registration has been approved.",
+  });
+});
+
+app.post(`${API_BASE}/auth/coach-registration-update`, async (c) => {
+  const updateLimit = rateLimitConfig("auth_coach_registration_update", { max: 8, windowSeconds: 60 });
+  const updateRateErr = await enforceRateLimit(c, {
+    scope: "auth_coach_registration_update",
+    key: requestClientKey(c),
+    max: updateLimit.max,
+    windowSeconds: updateLimit.windowSeconds,
+  });
+  if (updateRateErr) return updateRateErr;
+
+  const body = await c.req.json().catch(() => ({}));
+  const email = String(body?.email || "").trim().toLowerCase();
+  const password = String(body?.password || "").trim();
+  if (!email) return jsonErr(c, 400, "VALIDATION_ERROR", "Email is required.");
+  if (!password) return jsonErr(c, 400, "VALIDATION_ERROR", "Password is required.");
+  if (!isValidEmail(email)) return jsonErr(c, 400, "VALIDATION_ERROR", "Email must be a valid address.");
+
+  const registrations = await getCoachRegistrations();
+  const pending = findLatestCoachRegistrationByEmail(registrations, email, ["pending"]);
+  if (!pending) return jsonErr(c, 404, "NOT_FOUND", "No pending coach registration found for this email.");
+  if (pending.password !== password) return jsonErr(c, 401, "UNAUTHENTICATED", "Invalid credentials.");
+  const draft = parseCoachRegistrationDraft(body, pending);
+  const draftError = validateCoachRegistrationDraft(draft);
+  if (draftError) return jsonErr(c, 400, "VALIDATION_ERROR", draftError);
+
+  const updated: ApiCoachRegistration = {
+    ...pending,
+    name: draft.name,
+    phone: draft.phone,
+    coachProfile: draft.coachProfile,
+    coachExpertise: draft.coachExpertise,
+    verificationMethod: draft.verificationMethod as ApiCoachRegistration["verificationMethod"],
+    verificationDocumentName: draft.verificationDocumentName,
+    verificationId: draft.verificationId,
+    verificationNotes: draft.verificationNotes,
+    updatedAt: nowIso(),
+  };
+  await kv.set(`coachreg:${updated.id}`, updated);
+  await writeAuditLog({
+    action: "coach_registration_updated_by_applicant",
+    entityType: "coach_registration",
+    entityId: updated.id,
+    actorId: "anonymous",
+    actorRole: "player",
+    metadata: { email, requestId: requestIdFromContext(c) },
+  });
+  return jsonOk(c, sanitizeCoachRegistration(updated));
+});
+
+app.post(`${API_BASE}/auth/coach-registration-withdraw`, async (c) => {
+  const withdrawLimit = rateLimitConfig("auth_coach_registration_withdraw", { max: 8, windowSeconds: 60 });
+  const withdrawRateErr = await enforceRateLimit(c, {
+    scope: "auth_coach_registration_withdraw",
+    key: requestClientKey(c),
+    max: withdrawLimit.max,
+    windowSeconds: withdrawLimit.windowSeconds,
+  });
+  if (withdrawRateErr) return withdrawRateErr;
+
+  const body = await c.req.json().catch(() => ({}));
+  const email = String(body?.email || "").trim().toLowerCase();
+  const password = String(body?.password || "").trim();
+  if (!email) return jsonErr(c, 400, "VALIDATION_ERROR", "Email is required.");
+  if (!password) return jsonErr(c, 400, "VALIDATION_ERROR", "Password is required.");
+  if (!isValidEmail(email)) return jsonErr(c, 400, "VALIDATION_ERROR", "Email must be a valid address.");
+
+  const registrations = await getCoachRegistrations();
+  const pending = findLatestCoachRegistrationByEmail(registrations, email, ["pending"]);
+  if (!pending) {
+    return jsonErr(c, 404, "NOT_FOUND", "No pending coach registration found for this email.");
+  }
+  if (pending.password !== password) {
+    return jsonErr(c, 401, "UNAUTHENTICATED", "Invalid credentials.");
+  }
+
+  await kv.del(`coachreg:${pending.id}`);
+  await writeAuditLog({
+    action: "coach_registration_withdrawn",
+    entityType: "coach_registration",
+    entityId: pending.id,
+    actorId: "anonymous",
+    actorRole: "player",
+    metadata: { email, requestId: requestIdFromContext(c) },
+  });
+
+  return jsonOk(c, { withdrawn: true });
+});
+
+app.post(`${API_BASE}/auth/coach-registration-resubmit`, async (c) => {
+  const resubmitLimit = rateLimitConfig("auth_coach_registration_resubmit", { max: 6, windowSeconds: 60 });
+  const resubmitRateErr = await enforceRateLimit(c, {
+    scope: "auth_coach_registration_resubmit",
+    key: requestClientKey(c),
+    max: resubmitLimit.max,
+    windowSeconds: resubmitLimit.windowSeconds,
+  });
+  if (resubmitRateErr) return resubmitRateErr;
+
+  const body = await c.req.json().catch(() => ({}));
+  const email = String(body?.email || "").trim().toLowerCase();
+  const password = String(body?.password || "").trim();
+  if (!email) return jsonErr(c, 400, "VALIDATION_ERROR", "Email is required.");
+  if (!password) return jsonErr(c, 400, "VALIDATION_ERROR", "Password is required.");
+  if (!isValidEmail(email)) return jsonErr(c, 400, "VALIDATION_ERROR", "Email must be a valid address.");
+
+  const registrations = await getCoachRegistrations();
+  const rejected = findLatestCoachRegistrationByEmail(registrations, email, ["rejected"]);
+  if (!rejected) return jsonErr(c, 404, "NOT_FOUND", "No rejected coach registration found for this email.");
+  if (rejected.password !== password) return jsonErr(c, 401, "UNAUTHENTICATED", "Invalid credentials.");
+  const draft = parseCoachRegistrationDraft(body, rejected);
+  const draftError = validateCoachRegistrationDraft(draft);
+  if (draftError) return jsonErr(c, 400, "VALIDATION_ERROR", draftError);
+
+  const updated: ApiCoachRegistration = {
+    ...rejected,
+    password,
+    name: draft.name,
+    phone: draft.phone,
+    coachProfile: draft.coachProfile,
+    coachExpertise: draft.coachExpertise,
+    verificationMethod: draft.verificationMethod as ApiCoachRegistration["verificationMethod"],
+    verificationDocumentName: draft.verificationDocumentName,
+    verificationId: draft.verificationId,
+    verificationNotes: draft.verificationNotes,
+    status: "pending",
+    reviewNote: undefined,
+    updatedAt: nowIso(),
+  };
+  await kv.set(`coachreg:${updated.id}`, updated);
+  await writeAuditLog({
+    action: "coach_registration_resubmitted",
+    entityType: "coach_registration",
+    entityId: updated.id,
+    actorId: "anonymous",
+    actorRole: "player",
+    metadata: { email, requestId: requestIdFromContext(c) },
+  });
+  return jsonOk(c, sanitizeCoachRegistration(updated));
 });
 
 app.post(`${API_BASE}/auth/change-password`, async (c) => {
@@ -1421,7 +1825,7 @@ app.patch(`${API_BASE}/coach/profile`, async (c) => {
 });
 
 app.post(`${API_BASE}/coach/verification/submit`, async (c) => {
-  const result = await requireRole(c, ["coach"]);
+  const result = await requireRole(c, ["player", "coach"]);
   if ("err" in result) return result.err;
   const body = await c.req.json().catch(() => ({}));
   const method = String(body?.method || "").trim() as ApiUser["coachVerificationMethod"];
@@ -1452,7 +1856,19 @@ app.get(`${API_BASE}/admin/coaches/verification`, async (c) => {
   const result = await requireRole(c, ["admin", "staff"]);
   if ("err" in result) return result.err;
   const status = String(c.req.query("status") || "").trim();
-  let coaches = ((await kv.getByPrefix("user:")) as ApiUser[]).filter((u) => u.role === "coach");
+  let coaches = ((await kv.getByPrefix("user:")) as ApiUser[]).filter(
+    (u) =>
+      u.role === "coach" ||
+      Boolean(u.coachVerificationStatus) ||
+      Boolean(u.coachVerificationSubmittedAt) ||
+      Boolean(u.coachVerificationMethod) ||
+      Boolean(u.coachVerificationDocumentName),
+  );
+  const registrations = (await kv.getByPrefix("coachreg:")) as ApiCoachRegistration[];
+  const registrationRows = registrations
+    .filter((registration) => registration.status !== "approved")
+    .map(mapCoachRegistrationToQueueUser);
+  coaches = [...coaches, ...registrationRows];
   if (status) {
     coaches = coaches.filter((cch) => (cch.coachVerificationStatus || "unverified") === status);
   }
@@ -1465,14 +1881,70 @@ app.get(`${API_BASE}/admin/coaches/verification`, async (c) => {
 app.post(`${API_BASE}/admin/coaches/:id/verification/approve`, async (c) => {
   const result = await requireRole(c, ["admin", "staff"]);
   if ("err" in result) return result.err;
-  const coach = (await kv.get(`user:${c.req.param("id")}`)) as ApiUser | null;
-  if (!coach || coach.role !== "coach") return jsonErr(c, 404, "NOT_FOUND", "Coach not found.");
+  const targetId = String(c.req.param("id") || "").trim();
+  const registrationId = coachRegistrationInternalId(targetId);
+  const registration = (await kv.get(`coachreg:${registrationId}`)) as ApiCoachRegistration | null;
+  const body = await c.req.json().catch(() => ({}));
+  if (registration) {
+    if (registration.status !== "pending") {
+      return jsonErr(c, 409, "CONFLICT", "Only pending coach registration can be approved.");
+    }
+    const users = (await kv.getByPrefix("user:")) as ApiUser[];
+    if (users.some((u) => u.email.toLowerCase() === registration.email.toLowerCase())) {
+      return jsonErr(c, 409, "CONFLICT", "Email already exists.");
+    }
+    const createdCoach: ApiUser = {
+      id: id(),
+      email: registration.email,
+      name: registration.name,
+      role: "coach",
+      phone: registration.phone,
+      coachProfile: registration.coachProfile,
+      coachExpertise: registration.coachExpertise || [],
+      coachVerificationStatus: "verified",
+      coachVerificationMethod: registration.verificationMethod,
+      coachVerificationDocumentName: registration.verificationDocumentName,
+      coachVerificationId: registration.verificationId,
+      coachVerificationNotes: String(body?.notes || registration.reviewNote || "").trim() || registration.verificationNotes,
+      coachVerificationSubmittedAt: registration.createdAt,
+      createdAt: nowIso(),
+    };
+    await kv.set(`user:${createdCoach.id}`, createdCoach);
+    await setUserPassword(createdCoach.id, registration.password);
+    await kv.set(`coachreg:${registration.id}`, {
+      ...registration,
+      status: "approved",
+      reviewNote: String(body?.notes || registration.reviewNote || "").trim() || registration.reviewNote,
+      updatedAt: nowIso(),
+    });
+    const siblingRegistrations = (await kv.getByPrefix("coachreg:")) as ApiCoachRegistration[];
+    const staleSiblings = siblingRegistrations.filter(
+      (item) =>
+        item.id !== registration.id &&
+        item.email.toLowerCase() === registration.email.toLowerCase() &&
+        item.status !== "approved",
+    );
+    if (staleSiblings.length > 0) {
+      await kv.mdel(staleSiblings.map((item) => `coachreg:${item.id}`));
+    }
+    await writeAuditLog({
+      action: "coach_registration_approved",
+      entityType: "coach_registration",
+      entityId: registration.id,
+      actorId: result.user.id,
+      actorRole: result.role,
+      metadata: { createdCoachId: createdCoach.id, email: registration.email, requestId: requestIdFromContext(c) },
+    });
+    return jsonOk(c, createdCoach);
+  }
+  const coach = (await kv.get(`user:${targetId}`)) as ApiUser | null;
+  if (!coach) return jsonErr(c, 404, "NOT_FOUND", "Coach applicant not found.");
   if (coach.coachVerificationStatus !== "pending") {
     return jsonErr(c, 409, "CONFLICT", "Only pending coach verification can be approved.");
   }
-  const body = await c.req.json().catch(() => ({}));
   const updated: ApiUser = {
     ...coach,
+    role: "coach",
     coachVerificationStatus: "verified",
     coachVerificationNotes: String(body?.notes || coach.coachVerificationNotes || "").trim() || undefined,
   };
@@ -1489,15 +1961,40 @@ app.post(`${API_BASE}/admin/coaches/:id/verification/approve`, async (c) => {
 app.post(`${API_BASE}/admin/coaches/:id/verification/reject`, async (c) => {
   const result = await requireRole(c, ["admin", "staff"]);
   if ("err" in result) return result.err;
-  const coach = (await kv.get(`user:${c.req.param("id")}`)) as ApiUser | null;
-  if (!coach || coach.role !== "coach") return jsonErr(c, 404, "NOT_FOUND", "Coach not found.");
+  const targetId = String(c.req.param("id") || "").trim();
+  const registrationId = coachRegistrationInternalId(targetId);
+  const registration = (await kv.get(`coachreg:${registrationId}`)) as ApiCoachRegistration | null;
+  const body = await c.req.json().catch(() => ({}));
+  const reason = String(body?.reason || "").trim();
+  if (registration) {
+    if (registration.status !== "pending") {
+      return jsonErr(c, 409, "CONFLICT", "Only pending coach registration can be rejected.");
+    }
+    const updatedRegistration: ApiCoachRegistration = {
+      ...registration,
+      status: "rejected",
+      reviewNote: reason || registration.reviewNote,
+      updatedAt: nowIso(),
+    };
+    await kv.set(`coachreg:${registration.id}`, updatedRegistration);
+    await writeAuditLog({
+      action: "coach_registration_rejected",
+      entityType: "coach_registration",
+      entityId: registration.id,
+      actorId: result.user.id,
+      actorRole: result.role,
+      metadata: { email: registration.email, reason, requestId: requestIdFromContext(c) },
+    });
+    return jsonOk(c, mapCoachRegistrationToQueueUser(updatedRegistration));
+  }
+  const coach = (await kv.get(`user:${targetId}`)) as ApiUser | null;
+  if (!coach) return jsonErr(c, 404, "NOT_FOUND", "Coach applicant not found.");
   if (coach.coachVerificationStatus !== "pending") {
     return jsonErr(c, 409, "CONFLICT", "Only pending coach verification can be rejected.");
   }
-  const body = await c.req.json().catch(() => ({}));
-  const reason = String(body?.reason || "").trim();
   const updated: ApiUser = {
     ...coach,
+    role: coach.role === "admin" || coach.role === "staff" ? coach.role : "player",
     coachVerificationStatus: "rejected",
     coachVerificationNotes: reason || coach.coachVerificationNotes,
   };
@@ -1509,6 +2006,153 @@ app.post(`${API_BASE}/admin/coaches/:id/verification/reject`, async (c) => {
     type: "warning",
   });
   return jsonOk(c, updated);
+});
+
+app.get(`${API_BASE}/admin/coach-registrations`, async (c) => {
+  const result = await requireRole(c, ["admin", "staff"]);
+  if ("err" in result) return result.err;
+
+  const status = String(c.req.query("status") || "").trim().toLowerCase();
+  const search = String(c.req.query("search") || "").trim().toLowerCase();
+  const pageRaw = Number(c.req.query("page") || 1);
+  const limitRaw = Number(c.req.query("limit") || 20);
+  if (!Number.isFinite(pageRaw) || pageRaw < 1) {
+    return jsonErr(c, 400, "VALIDATION_ERROR", "page must be a positive integer.");
+  }
+  if (!Number.isFinite(limitRaw) || limitRaw < 1 || limitRaw > 200) {
+    return jsonErr(c, 400, "VALIDATION_ERROR", "limit must be between 1 and 200.");
+  }
+  const page = Math.floor(pageRaw);
+  const limit = Math.floor(limitRaw);
+  if (status && !["pending", "approved", "rejected"].includes(status)) {
+    return jsonErr(c, 400, "VALIDATION_ERROR", "status must be one of pending, approved, rejected.");
+  }
+
+  const allRegistrations = (await kv.getByPrefix("coachreg:")) as ApiCoachRegistration[];
+  const statusCounts = {
+    pending: allRegistrations.filter((item) => item.status === "pending").length,
+    approved: allRegistrations.filter((item) => item.status === "approved").length,
+    rejected: allRegistrations.filter((item) => item.status === "rejected").length,
+  };
+
+  let registrations = allRegistrations;
+  if (status) registrations = registrations.filter((item) => item.status === status);
+  if (search) {
+    registrations = registrations.filter((item) => {
+      const haystack = `${item.email} ${item.name} ${item.verificationDocumentName} ${item.verificationMethod}`.toLowerCase();
+      return haystack.includes(search);
+    });
+  }
+  registrations = registrations.sort(
+    (a, b) => new Date(b.updatedAt || b.createdAt).getTime() - new Date(a.updatedAt || a.createdAt).getTime(),
+  );
+  const totalFiltered = registrations.length;
+  const totalPages = Math.max(1, Math.ceil(totalFiltered / limit));
+  const offset = (page - 1) * limit;
+  const pageRows = registrations.slice(offset, offset + limit);
+
+  return jsonOk(c, pageRows.map(sanitizeCoachRegistration), {
+    pagination: {
+      page,
+      limit,
+      total: totalFiltered,
+      totalPages,
+      hasNext: page < totalPages,
+      hasPrev: page > 1,
+    },
+    counts: {
+      all: allRegistrations.length,
+      ...statusCounts,
+    },
+    filters: {
+      status: status || null,
+      search: search || null,
+    },
+  });
+});
+
+app.get(`${API_BASE}/admin/coach-registrations/summary`, async (c) => {
+  const result = await requireRole(c, ["admin", "staff"]);
+  if ("err" in result) return result.err;
+
+  const registrations = (await kv.getByPrefix("coachreg:")) as ApiCoachRegistration[];
+  const summary = {
+    total: registrations.length,
+    pending: registrations.filter((item) => item.status === "pending").length,
+    approved: registrations.filter((item) => item.status === "approved").length,
+    rejected: registrations.filter((item) => item.status === "rejected").length,
+    latestUpdatedAt: registrations
+      .map((item) => item.updatedAt || item.createdAt)
+      .sort((a, b) => new Date(b).getTime() - new Date(a).getTime())[0] || null,
+  };
+  return jsonOk(c, summary);
+});
+
+app.get(`${API_BASE}/admin/coach-registrations/:id`, async (c) => {
+  const result = await requireRole(c, ["admin", "staff"]);
+  if ("err" in result) return result.err;
+
+  const registrationId = String(c.req.param("id") || "").trim();
+  if (!registrationId) return jsonErr(c, 400, "VALIDATION_ERROR", "registration id is required.");
+  const registration = (await kv.get(`coachreg:${registrationId}`)) as ApiCoachRegistration | null;
+  if (!registration) return jsonErr(c, 404, "NOT_FOUND", "Coach registration not found.");
+  return jsonOk(c, sanitizeCoachRegistration(registration));
+});
+
+app.post(`${API_BASE}/admin/coach-registrations/:id/reopen`, async (c) => {
+  const result = await requireRole(c, ["admin", "staff"]);
+  if ("err" in result) return result.err;
+
+  const registrationId = String(c.req.param("id") || "").trim();
+  if (!registrationId) return jsonErr(c, 400, "VALIDATION_ERROR", "registration id is required.");
+  const registration = (await kv.get(`coachreg:${registrationId}`)) as ApiCoachRegistration | null;
+  if (!registration) return jsonErr(c, 404, "NOT_FOUND", "Coach registration not found.");
+  if (registration.status === "approved") {
+    return jsonErr(c, 409, "CONFLICT", "Approved registration cannot be reopened.");
+  }
+
+  const body = await c.req.json().catch(() => ({}));
+  const note = String(body?.note || "").trim();
+  const updated: ApiCoachRegistration = {
+    ...registration,
+    status: "pending",
+    reviewNote: note || undefined,
+    updatedAt: nowIso(),
+  };
+  await kv.set(`coachreg:${registration.id}`, updated);
+
+  await writeAuditLog({
+    action: "coach_registration_reopened",
+    entityType: "coach_registration",
+    entityId: registration.id,
+    actorId: result.user.id,
+    actorRole: result.role,
+    metadata: { email: registration.email, requestId: requestIdFromContext(c) },
+  });
+
+  return jsonOk(c, sanitizeCoachRegistration(updated));
+});
+
+app.delete(`${API_BASE}/admin/coach-registrations/:id`, async (c) => {
+  const result = await requireRole(c, ["admin"]);
+  if ("err" in result) return result.err;
+
+  const registrationId = String(c.req.param("id") || "").trim();
+  if (!registrationId) return jsonErr(c, 400, "VALIDATION_ERROR", "registration id is required.");
+  const registration = (await kv.get(`coachreg:${registrationId}`)) as ApiCoachRegistration | null;
+  if (!registration) return jsonErr(c, 404, "NOT_FOUND", "Coach registration not found.");
+
+  await kv.del(`coachreg:${registration.id}`);
+  await writeAuditLog({
+    action: "coach_registration_deleted",
+    entityType: "coach_registration",
+    entityId: registration.id,
+    actorId: result.user.id,
+    actorRole: result.role,
+    metadata: { email: registration.email, requestId: requestIdFromContext(c) },
+  });
+
+  return jsonOk(c, { deleted: true, id: registration.id });
 });
 
 app.get(`${API_BASE}/coaches`, async (c) => {
@@ -5178,6 +5822,7 @@ app.get(`${API_BASE}/admin/data/export`, async (c) => {
     subscriptions: (await kv.getByPrefix("subscription:")) as ApiSubscription[],
     notifications: (await kv.getByPrefix("notification:")) as ApiNotification[],
     coachApplications: (await kv.getByPrefix("coachapp:")) as ApiCoachApplication[],
+    coachRegistrations: (await kv.getByPrefix("coachreg:")) as ApiCoachRegistration[],
     config,
   };
   return jsonOk(c, {
@@ -5209,6 +5854,9 @@ app.post(`${API_BASE}/admin/data/import`, async (c) => {
   const coachApplications = Array.isArray(data.coachApplications)
     ? (data.coachApplications as ApiCoachApplication[])
     : [];
+  const coachRegistrations = Array.isArray(data.coachRegistrations)
+    ? (data.coachRegistrations as ApiCoachRegistration[])
+    : [];
   const config = normalizeFacilityConfig(data.config || DEFAULT_FACILITY_CONFIG);
   const configValidation = validateFacilityConfig(config);
   if (configValidation) return jsonErr(c, 400, "VALIDATION_ERROR", configValidation);
@@ -5220,6 +5868,7 @@ app.post(`${API_BASE}/admin/data/import`, async (c) => {
   const existingSubscriptions = (await kv.getByPrefix("subscription:")) as ApiSubscription[];
   const existingNotifications = (await kv.getByPrefix("notification:")) as ApiNotification[];
   const existingCoachApplications = (await kv.getByPrefix("coachapp:")) as ApiCoachApplication[];
+  const existingCoachRegistrations = (await kv.getByPrefix("coachreg:")) as ApiCoachRegistration[];
   const existingAudits = (await kv.getByPrefix("audit:")) as ApiAuditLog[];
   const existingHolds = (await kv.getByPrefix("booking_hold:")) as ApiBookingHold[];
   const existingPaymentTx = (await kv.getByPrefix("payment_tx:")) as ApiPaymentTransaction[];
@@ -5231,6 +5880,7 @@ app.post(`${API_BASE}/admin/data/import`, async (c) => {
   await deleteByPrefixRecords("subscription", existingSubscriptions);
   await deleteByPrefixRecords("notification", existingNotifications);
   await deleteByPrefixRecords("coachapp", existingCoachApplications);
+  await deleteByPrefixRecords("coachreg", existingCoachRegistrations);
   await deleteByPrefixRecords("audit", existingAudits);
   await deleteByPrefixRecords("booking_hold", existingHolds);
   await deleteByPrefixRecords("payment_tx", existingPaymentTx);
@@ -5245,6 +5895,12 @@ app.post(`${API_BASE}/admin/data/import`, async (c) => {
     await kv.mset(
       coachApplications.map((app) => `coachapp:${app.id}`),
       coachApplications,
+    );
+  }
+  if (coachRegistrations.length) {
+    await kv.mset(
+      coachRegistrations.map((registration) => `coachreg:${registration.id}`),
+      coachRegistrations,
     );
   }
   await kv.set("facility:config", config);
@@ -5263,6 +5919,7 @@ app.post(`${API_BASE}/admin/data/import`, async (c) => {
       subscriptions: subscriptions.length,
       notifications: notifications.length,
       coachApplications: coachApplications.length,
+      coachRegistrations: coachRegistrations.length,
     },
   });
 
@@ -5275,6 +5932,7 @@ app.post(`${API_BASE}/admin/data/import`, async (c) => {
       subscriptions: subscriptions.length,
       notifications: notifications.length,
       coachApplications: coachApplications.length,
+      coachRegistrations: coachRegistrations.length,
     },
   });
 });
@@ -5290,6 +5948,7 @@ app.post(`${API_BASE}/admin/data/reset`, async (c) => {
   const subscriptions = (await kv.getByPrefix("subscription:")) as ApiSubscription[];
   const notifications = (await kv.getByPrefix("notification:")) as ApiNotification[];
   const coachApplications = (await kv.getByPrefix("coachapp:")) as ApiCoachApplication[];
+  const coachRegistrations = (await kv.getByPrefix("coachreg:")) as ApiCoachRegistration[];
   const audits = (await kv.getByPrefix("audit:")) as ApiAuditLog[];
   const holds = (await kv.getByPrefix("booking_hold:")) as ApiBookingHold[];
   const paymentTx = (await kv.getByPrefix("payment_tx:")) as ApiPaymentTransaction[];
@@ -5302,6 +5961,7 @@ app.post(`${API_BASE}/admin/data/reset`, async (c) => {
     subscriptions: await deleteByPrefixRecords("subscription", subscriptions),
     notifications: await deleteByPrefixRecords("notification", notifications),
     coachApplications: await deleteByPrefixRecords("coachapp", coachApplications),
+    coachRegistrations: await deleteByPrefixRecords("coachreg", coachRegistrations),
     audits: await deleteByPrefixRecords("audit", audits),
     bookingHolds: await deleteByPrefixRecords("booking_hold", holds),
     paymentTransactions: await deleteByPrefixRecords("payment_tx", paymentTx),
