@@ -34,6 +34,7 @@ export function SignUp() {
   const { signup, signInWithProvider } = useApp();
   const navigate = useNavigate();
   const location = useLocation();
+  const returnTo = encodeURIComponent(`${location.pathname}${location.search}`);
   const roleFromQuery = new URLSearchParams(location.search).get('role');
   const roleFromQuerySafe = isPortalRole(roleFromQuery) ? roleFromQuery : null;
   const isCoachRole = selectedRole === 'coach';
@@ -332,7 +333,20 @@ export function SignUp() {
               />
             </div>
             <label htmlFor="terms" className="text-base text-slate-900">
-              I agree to the <Link to="/terms-of-service" className="text-indigo-700 font-medium hover:text-indigo-900 hover:underline">Terms of Service</Link> and <Link to="/privacy-policy" className="text-indigo-700 font-medium hover:text-indigo-900 hover:underline">Privacy Policy</Link>
+              I agree to the{' '}
+              <Link
+                to={`/terms-of-service?returnTo=${returnTo}`}
+                className="text-indigo-700 font-medium hover:text-indigo-900 hover:underline"
+              >
+                Terms of Service
+              </Link>{' '}
+              and{' '}
+              <Link
+                to={`/privacy-policy?returnTo=${returnTo}`}
+                className="text-indigo-700 font-medium hover:text-indigo-900 hover:underline"
+              >
+                Privacy Policy
+              </Link>
             </label>
           </div>
 
@@ -374,10 +388,6 @@ export function SignUp() {
                 Google
               </button>
             </div>
-          </div>
-        ) : selectedRole && selectedRole !== 'player' ? (
-          <div className="my-4 rounded-lg border border-slate-300 bg-white/80 px-4 py-3 text-sm text-slate-800">
-            Social sign-up is available for Player accounts only.
           </div>
         ) : null}
 

@@ -702,8 +702,8 @@ export function LandingPage() {
               <li><Link to="/login" className="hover:text-teal-400 transition-colors flex items-center gap-2"><ChevronRight size={14} /> Sign In</Link></li>
               <li><Link to="/login" className="hover:text-teal-400 transition-colors flex items-center gap-2"><ChevronRight size={14} /> Register</Link></li>
               <li><a href="#" className="hover:text-teal-400 transition-colors flex items-center gap-2"><ChevronRight size={14} /> About Us</a></li>
-              <li><a href="#" className="hover:text-teal-400 transition-colors flex items-center gap-2"><ChevronRight size={14} /> Privacy Policy</a></li>
-              <li><a href="#" className="hover:text-teal-400 transition-colors flex items-center gap-2"><ChevronRight size={14} /> Terms of Service</a></li>
+              <li><Link to="/privacy-policy?returnTo=%2F" className="hover:text-teal-400 transition-colors flex items-center gap-2"><ChevronRight size={14} /> Privacy Policy</Link></li>
+              <li><Link to="/terms-of-service?returnTo=%2F" className="hover:text-teal-400 transition-colors flex items-center gap-2"><ChevronRight size={14} /> Terms of Service</Link></li>
             </ul>
           </div>
         </div>
