@@ -3,10 +3,16 @@
   "private": true,
   "version": "0.0.1",
   "type": "module",
+  "engines": {
+    "node": "20.x"
+  },
   "scripts": {
+    "predev": "node -e \"const major=Number(process.versions.node.split('.')[0]||0); if(major!==20){console.error(`Unsupported Node.js version: ${process.versions.node}\\nThis project expects Node.js 20.x.`); process.exit(1)}\"",
+    "prebuild": "node -e \"const major=Number(process.versions.node.split('.')[0]||0); if(major!==20){console.error(`Unsupported Node.js version: ${process.versions.node}\\nThis project expects Node.js 20.x.`); process.exit(1)}\"",
     "build": "vite build",
     "dev": "vite --host 0.0.0.0 --port 5173",
     "dev:host": "vite --host 0.0.0.0 --port 5173",
+    "dev:static": "deno run --allow-net --allow-read serve-dist.ts 5173",
     "test:backend": "deno test --allow-env supabase/functions/server/index.test.ts",
     "preview": "vite preview --host 0.0.0.0 --port 4173",
     "preview:host": "vite preview --host 0.0.0.0 --port 4173"

@@ -40,8 +40,32 @@ export function Sidebar({ currentView, onViewChange, role }: SidebarProps) {
   const { unreadNotificationCount, currentUser, logout, bookings } = useApp();
   const navigate = useNavigate();
   const [isLogoutConfirmOpen, setIsLogoutConfirmOpen] = React.useState(false);
-  const unreadCount = unreadNotificationCount;
+  const isPaymentFlowActive = React.useMemo(() => {
+    try {
+      const recent = Number(sessionStorage.getItem('ventra_recent_payment_flow') || 0);
+      const pendingStart = Number(sessionStorage.getItem('ventra_payment_pending_started_at') || 0);
+      const pendingIdsRaw = sessionStorage.getItem('ventra_payment_pending_booking_ids');
+      const pendingIds = pendingIdsRaw ? JSON.parse(pendingIdsRaw) : [];
+      const hasPending = Array.isArray(pendingIds) && pendingIds.length > 0;
+      const recentActive = Boolean(recent && Date.now() - recent < 15_000);
+      const pendingActive = hasPending && (!pendingStart || Date.now() - pendingStart < 30 * 60 * 1000);
+      return recentActive || pendingActive;
+    } catch {
+      return false;
+    }
+  }, []);
+  const [unreadCount, setUnreadCount] = React.useState(() => unreadNotificationCount);
   const pendingCount = bookings.filter(b => b.status === 'pending').length;
+
+  React.useEffect(() => {
+    const dropDelayMs = isPaymentFlowActive ? 8000 : 600;
+    if (unreadNotificationCount > 0) {
+      setUnreadCount(unreadNotificationCount);
+      return;
+    }
+    const timeout = window.setTimeout(() => setUnreadCount(0), dropDelayMs);
+    return () => window.clearTimeout(timeout);
+  }, [unreadNotificationCount, isPaymentFlowActive]);
 
   const handleConfirmLogout = () => {
     logout();
@@ -52,7 +76,7 @@ export function Sidebar({ currentView, onViewChange, role }: SidebarProps) {
   const menuItems = [
     { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard, roles: ['admin', 'staff', 'coach', 'player'] },
     { id: 'requests', label: 'Requests', icon: ListChecks, roles: ['admin', 'staff'] },
-    { id: 'booking', label: 'Book a Court', icon: Calendar, roles: ['admin', 'staff', 'coach', 'player'] },
+    { id: 'booking', label: 'Book a Court', icon: Calendar, roles: ['coach', 'player'] },
     { id: 'my-bookings', label: 'My Reservation', icon: Calendar, roles: ['player', 'coach'] },
     { id: 'history', label: 'History', icon: History, roles: ['player', 'coach'] },
     { id: 'hire-coach', label: 'Hire a Coach', icon: UserRoundPlus, roles: ['player'] },

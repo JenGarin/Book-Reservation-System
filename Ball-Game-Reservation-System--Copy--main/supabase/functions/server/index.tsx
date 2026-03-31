@@ -5,12 +5,73 @@ import * as kv from "./kv_store.tsx";
 
 type Role = "admin" | "staff" | "coach" | "player";
 const ROLE_VALUES: Role[] = ["admin", "staff", "coach", "player"];
+type UserStatus = "active" | "pending";
+const USER_STATUS_VALUES: UserStatus[] = ["active", "pending"];
+type AuthMode = "mock" | "supabase";
+
+let supabaseCreateClientFactory: ((url: string, key: string) => any) | null = null;
+let cachedAnonClient: any | null = null;
+let cachedServiceClient: any | null = null;
+
+const loadSupabaseCreateClient = async () => {
+  if (supabaseCreateClientFactory) return supabaseCreateClientFactory;
+  const mod = await import("jsr:@supabase/supabase-js@2.49.8");
+  supabaseCreateClientFactory = mod.createClient;
+  return supabaseCreateClientFactory;
+};
+
+const authMode = (): AuthMode => {
+  const raw = String(Deno.env.get("AUTH_MODE") || "").trim().toLowerCase();
+  return raw === "supabase" ? "supabase" : "mock";
+};
+
+const supabaseUrl = () => String(Deno.env.get("SUPABASE_URL") || "").trim();
+const supabaseAnonKey = () => String(Deno.env.get("SUPABASE_ANON_KEY") || "").trim();
+const supabaseServiceRoleKey = () => String(Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") || "").trim();
+const adminSignupCode = () => String(Deno.env.get("ADMIN_SIGNUP_CODE") || "").trim();
+
+const hasSupabaseAuthEnv = () => {
+  try {
+    return !!Deno.env.get("SUPABASE_URL") && !!Deno.env.get("SUPABASE_ANON_KEY");
+  } catch {
+    return false;
+  }
+};
+
+const hasSupabaseServiceEnv = () => {
+  try {
+    return !!Deno.env.get("SUPABASE_URL") && !!Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
+  } catch {
+    return false;
+  }
+};
+
+const supabaseAnonClient = async () => {
+  if (cachedAnonClient) return cachedAnonClient;
+  const url = supabaseUrl();
+  const key = supabaseAnonKey();
+  if (!url || !key) throw new Error("Missing SUPABASE_URL or SUPABASE_ANON_KEY environment variables.");
+  const createClient = await loadSupabaseCreateClient();
+  cachedAnonClient = createClient(url, key);
+  return cachedAnonClient;
+};
+
+const supabaseServiceClient = async () => {
+  if (cachedServiceClient) return cachedServiceClient;
+  const url = supabaseUrl();
+  const key = supabaseServiceRoleKey();
+  if (!url || !key) throw new Error("Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY environment variables.");
+  const createClient = await loadSupabaseCreateClient();
+  cachedServiceClient = createClient(url, key);
+  return cachedServiceClient;
+};
 
 type ApiUser = {
   id: string;
   email: string;
   name: string;
   role: Role;
+  status: UserStatus;
   phone?: string;
   avatar?: string;
   skillLevel?: string;
@@ -34,6 +95,7 @@ type ApiCourt = {
   hourlyRate: number;
   peakHourRate?: number;
   status: string;
+  imageUrl?: string;
   operatingHours: { start: string; end: string };
 };
 
@@ -124,7 +186,10 @@ type ApiCoachApplication = {
 type ApiCoachRegistration = {
   id: string;
   email: string;
-  password: string;
+  // Legacy: plaintext password (kept for backward compatibility with older stored records).
+  password?: string;
+  // Preferred: hashed password credential for mock auth mode.
+  passwordHash?: string;
   name: string;
   phone?: string;
   coachProfile?: string;
@@ -139,7 +204,7 @@ type ApiCoachRegistration = {
   updatedAt?: string;
 };
 
-type ApiCoachRegistrationSafe = Omit<ApiCoachRegistration, "password">;
+type ApiCoachRegistrationSafe = Omit<ApiCoachRegistration, "password" | "passwordHash">;
 
 type CoachRegistrationDraft = {
   name: string;
@@ -209,6 +274,7 @@ type ApiRateLimitRecord = {
 };
 
 const isRole = (value: string): value is Role => ROLE_VALUES.includes(value as Role);
+const isUserStatus = (value: string): value is UserStatus => USER_STATUS_VALUES.includes(value as UserStatus);
 const isValidEmail = (email: string) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
 const allowPrivilegedSignup = () => {
   try {
@@ -262,6 +328,7 @@ const mapCoachRegistrationToQueueUser = (registration: ApiCoachRegistration): Ap
   email: registration.email,
   name: registration.name,
   role: "coach",
+  status: registration.status === "pending" ? "pending" : "active",
   phone: registration.phone,
   coachProfile: registration.coachProfile,
   coachExpertise: registration.coachExpertise || [],
@@ -274,7 +341,7 @@ const mapCoachRegistrationToQueueUser = (registration: ApiCoachRegistration): Ap
   createdAt: registration.createdAt,
 });
 const sanitizeCoachRegistration = (registration: ApiCoachRegistration): ApiCoachRegistrationSafe => {
-  const { password: _password, ...safe } = registration;
+  const { password: _password, passwordHash: _passwordHash, ...safe } = registration;
   return safe;
 };
 const normalizeCoachRegistrationEmail = (value: unknown) => String(value || "").trim().toLowerCase();
@@ -333,7 +400,7 @@ const findLatestCoachRegistrationByEmail = (
     ),
   )[0];
 const paymentDeadlineMinutes = () => {
-  const fallback = 120;
+  const fallback = 30;
   try {
     const raw = Number(Deno.env.get("BOOKING_PAYMENT_DEADLINE_MINUTES") || fallback);
     return Number.isFinite(raw) ? Math.max(1, raw) : fallback;
@@ -345,7 +412,10 @@ const paymentDueAtFromNow = () => new Date(Date.now() + paymentDeadlineMinutes()
 const paymentProvider = (): "mock" | "gateway" => {
   try {
     const raw = String(Deno.env.get("PAYMENT_PROVIDER") || "mock").trim().toLowerCase();
-    return raw === "gateway" ? "gateway" : "mock";
+    if (raw === "gateway") return "gateway";
+    // Back-compat with older env docs that used method-like values.
+    if (raw === "maya" || raw === "gcash") return "gateway";
+    return "mock";
   } catch {
     return "mock";
   }
@@ -353,9 +423,12 @@ const paymentProvider = (): "mock" | "gateway" => {
 const bearerAuthRequired = () => {
   try {
     const raw = String(Deno.env.get("AUTH_REQUIRE_BEARER") || "").trim().toLowerCase();
-    return raw === "true" || raw === "1" || raw === "yes";
+    if (raw === "true" || raw === "1" || raw === "yes") return true;
+    if (raw === "false" || raw === "0" || raw === "no") return false;
+    // Safer default when using Supabase auth mode.
+    return authMode() === "supabase";
   } catch {
-    return false;
+    return authMode() === "supabase";
   }
 };
 const paymentApiKey = () => {
@@ -380,6 +453,10 @@ const rateLimitConfig = (scope: string, fallback: { max: number; windowSeconds: 
     max: readPositiveIntEnv(`RATE_LIMIT_${prefix}_MAX`, fallback.max),
     windowSeconds: readPositiveIntEnv(`RATE_LIMIT_${prefix}_WINDOW_SEC`, fallback.windowSeconds),
   };
+};
+const roleMatchesExpected = (actual: Role, expected: Role) => {
+  if (expected === "admin") return actual === "admin" || actual === "staff";
+  return actual === expected;
 };
 const requestClientKey = (c: any, userId?: string) => {
   if (userId) return `user:${userId}`;
@@ -610,10 +687,10 @@ const seedUsers = async (): Promise<ApiUser[]> => {
   if (existing.length > 0) return existing as ApiUser[];
 
   const users: ApiUser[] = [
-    { id: "admin-1", email: "admin@court.com", name: "Admin User", role: "admin", createdAt: nowIso() },
-    { id: "staff-1", email: "staff@court.com", name: "Staff Member", role: "staff", createdAt: nowIso() },
-    { id: "coach-1", email: "coach@court.com", name: "Coach Mike", role: "coach", createdAt: nowIso() },
-    { id: "player-1", email: "player@court.com", name: "Alex Johnson", role: "player", createdAt: nowIso() },
+    { id: "admin-1", email: "admin@court.com", name: "Admin User", role: "admin", status: "active", createdAt: nowIso() },
+    { id: "staff-1", email: "staff@court.com", name: "Staff Member", role: "staff", status: "active", createdAt: nowIso() },
+    { id: "coach-1", email: "coach@court.com", name: "Coach Mike", role: "coach", status: "active", createdAt: nowIso() },
+    { id: "player-1", email: "player@court.com", name: "Alex Johnson", role: "player", status: "active", createdAt: nowIso() },
   ];
   await kv.mset(users.map((u) => `user:${u.id}`), users);
   return users;
@@ -628,14 +705,108 @@ const defaultPasswordForRole = (role: Role) => {
   return "player";
 };
 
-const getUserPassword = async (user: ApiUser) => {
+const getUserPasswordCredential = async (user: ApiUser) => {
   const stored = (await kv.get(authCredentialKey(user.id))) as string | null;
   if (typeof stored === "string" && stored.trim().length > 0) return stored;
   return defaultPasswordForRole(user.role);
 };
 
+const base64Encode = (bytes: Uint8Array) => {
+  let binary = "";
+  for (const b of bytes) binary += String.fromCharCode(b);
+  // deno-lint-ignore no-deprecated-deno-api
+  return btoa(binary);
+};
+const base64Decode = (value: string) => {
+  // deno-lint-ignore no-deprecated-deno-api
+  const binary = atob(String(value || ""));
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return bytes;
+};
+
+const PBKDF2_ITERATIONS = 120_000;
+const passwordCredentialFormat = (iterations: number, saltB64: string, hashB64: string) =>
+  `pbkdf2$sha256$${iterations}$${saltB64}$${hashB64}`;
+
+const hashPassword = async (password: string) => {
+  const rawPassword = String(password || "");
+  const salt = new Uint8Array(16);
+  globalThis.crypto.getRandomValues(salt);
+  const saltSource = salt as unknown as BufferSource;
+  const keyMaterial = await crypto.subtle.importKey(
+    "raw",
+    new TextEncoder().encode(rawPassword),
+    { name: "PBKDF2" },
+    false,
+    ["deriveBits"],
+  );
+  const bits = await crypto.subtle.deriveBits(
+    { name: "PBKDF2", hash: "SHA-256", salt: saltSource, iterations: PBKDF2_ITERATIONS },
+    keyMaterial,
+    256,
+  );
+  return passwordCredentialFormat(PBKDF2_ITERATIONS, base64Encode(salt), base64Encode(new Uint8Array(bits)));
+};
+
+const verifyPasswordCredential = async (password: string, credential: string) => {
+  const stored = String(credential || "").trim();
+  const supplied = String(password || "");
+  if (!stored) return false;
+  if (!stored.startsWith("pbkdf2$")) {
+    // Legacy plaintext storage compatibility.
+    return supplied === stored;
+  }
+  const parts = stored.split("$");
+  if (parts.length !== 5) return false;
+  const algo = parts[1];
+  const iterations = Number(parts[2]);
+  const saltB64 = parts[3];
+  const hashB64 = parts[4];
+  if (algo !== "sha256") return false;
+  if (!Number.isFinite(iterations) || iterations < 1) return false;
+  let salt: Uint8Array;
+  let expectedHash: Uint8Array;
+  try {
+    salt = base64Decode(saltB64);
+    expectedHash = base64Decode(hashB64);
+  } catch {
+    return false;
+  }
+
+  const keyMaterial = await crypto.subtle.importKey(
+    "raw",
+    new TextEncoder().encode(supplied),
+    { name: "PBKDF2" },
+    false,
+    ["deriveBits"],
+  );
+  const saltSource = salt as unknown as BufferSource;
+  const bits = await crypto.subtle.deriveBits(
+    { name: "PBKDF2", hash: "SHA-256", salt: saltSource, iterations },
+    keyMaterial,
+    expectedHash.byteLength * 8,
+  );
+  const actualHash = new Uint8Array(bits);
+  if (actualHash.byteLength !== expectedHash.byteLength) return false;
+  let diff = 0;
+  for (let i = 0; i < actualHash.byteLength; i++) diff |= actualHash[i] ^ expectedHash[i];
+  return diff === 0;
+};
+
+const setUserPasswordCredential = async (userId: string, credential: string) => {
+  await kv.set(authCredentialKey(userId), String(credential || "").trim());
+};
+
 const setUserPassword = async (userId: string, password: string) => {
-  await kv.set(authCredentialKey(userId), String(password || "").trim());
+  const credential = await hashPassword(password);
+  await setUserPasswordCredential(userId, credential);
+};
+
+const randomTempPassword = () => {
+  const bytes = new Uint8Array(18);
+  globalThis.crypto.getRandomValues(bytes);
+  return `Tmp!${base64Encode(bytes).replaceAll("=", "").replaceAll("+", "A").replaceAll("/", "B")}`;
 };
 
 const minimumPasswordLength = () => {
@@ -703,30 +874,57 @@ const seedPlans = async () => {
   return plans;
 };
 
-const extractUserIdFromAuthorization = (authorizationHeader: string | undefined) => {
+const extractBearerToken = (authorizationHeader: string | undefined) => {
   const raw = String(authorizationHeader || "").trim();
   if (!raw) return "";
   const [scheme, token] = raw.split(" ");
   if (!scheme || !token || scheme.toLowerCase() !== "bearer") return "";
+  return token.trim();
+};
+
+const resolveUserIdFromBearerToken = async (token: string): Promise<string> => {
+  if (!token) return "";
   if (token.startsWith("mock-access-")) return token.slice("mock-access-".length);
   if (token.startsWith("mock-refresh-")) return token.slice("mock-refresh-".length);
-  return "";
+
+  if (authMode() !== "supabase") return "";
+  if (!hasSupabaseServiceEnv()) return "";
+
+  try {
+    const supabase = await supabaseServiceClient();
+    const { data, error } = await supabase.auth.getUser(token);
+    if (error) return "";
+    return String(data?.user?.id || "").trim();
+  } catch {
+    return "";
+  }
 };
 
 const authContext = async (
   c: any,
 ): Promise<{ user: ApiUser | null; role: Role | null; authErrorCode?: string; authErrorMessage?: string }> => {
   await seedUsers();
-  const bearerUserId = extractUserIdFromAuthorization(c.req.header("authorization"));
+  const bearerToken = extractBearerToken(c.req.header("authorization"));
+  const bearerUserId = await resolveUserIdFromBearerToken(bearerToken);
   const headerUserId = (c.req.header("x-user-id") || "").trim();
   const roleHeader = (c.req.header("x-user-role") || "") as Role;
   const requireBearer = bearerAuthRequired();
-  if (requireBearer && !bearerUserId) {
+  if (requireBearer && !bearerToken) {
     return {
       user: null,
       role: null,
       authErrorCode: "UNAUTHENTICATED",
       authErrorMessage: "Bearer token is required.",
+    };
+  }
+  if (bearerToken && !bearerUserId && authMode() === "supabase") {
+    return {
+      user: null,
+      role: null,
+      authErrorCode: "UNAUTHENTICATED",
+      authErrorMessage: hasSupabaseServiceEnv()
+        ? "Invalid bearer token."
+        : "Bearer token verification is not configured (missing SUPABASE_SERVICE_ROLE_KEY).",
     };
   }
   if (bearerUserId && headerUserId && bearerUserId !== headerUserId) {
@@ -1238,6 +1436,99 @@ app.post(`${API_BASE}/auth/login`, async (c) => {
     return jsonErr(c, 400, "VALIDATION_ERROR", "Invalid expectedRole.");
   }
   const expectedRole = (expectedRoleRaw || "") as Role | "";
+
+  if (authMode() === "supabase") {
+    if (!hasSupabaseAuthEnv()) {
+      return jsonErr(
+        c,
+        500,
+        "MISCONFIGURED",
+        "Supabase auth mode requires SUPABASE_URL and SUPABASE_ANON_KEY to be set.",
+      );
+    }
+    const supabase = await supabaseAnonClient();
+    const { data, error } = await supabase.auth.signInWithPassword({ email, password });
+    if (error || !data?.user || !data?.session) {
+      await writeAuditLog({
+        action: "auth_login_failed",
+        entityType: "auth",
+        entityId: email || "unknown",
+        actorId: "anonymous",
+        actorRole: "player",
+        metadata: {
+          reason: "invalid_credentials",
+          provider: "supabase",
+          email,
+          message: error?.message || "invalid_credentials",
+          requestId: requestIdFromContext(c),
+        },
+      });
+      return jsonErr(c, 401, "UNAUTHENTICATED", "Invalid credentials.");
+    }
+
+    const authUser = data.user;
+    const authUserId = String(authUser.id || "").trim();
+    const existing = (await kv.get(`user:${authUserId}`)) as ApiUser | null;
+    const nameFromMetadata = String(authUser.user_metadata?.name || "").trim();
+    const phoneFromMetadata = String(authUser.user_metadata?.phone || "").trim();
+
+    let user: ApiUser;
+    if (existing) {
+      user = {
+        ...existing,
+        status: isUserStatus(String((existing as any)?.status || "")) ? (existing as any).status : "active",
+      };
+    } else {
+      user = {
+        id: authUserId,
+        email,
+        name: nameFromMetadata || email.split("@")[0] || "User",
+        role: "player",
+        status: "active",
+        phone: phoneFromMetadata || undefined,
+        createdAt: nowIso(),
+      };
+      await kv.set(`user:${user.id}`, user);
+    }
+
+    if (expectedRole && !roleMatchesExpected(user.role, expectedRole)) {
+      await writeAuditLog({
+        action: "auth_login_failed",
+        entityType: "auth",
+        entityId: user.id,
+        actorId: user.id,
+        actorRole: user.role,
+        metadata: { reason: "role_mismatch", provider: "supabase", expectedRole, requestId: requestIdFromContext(c) },
+      });
+      return jsonErr(c, 403, "ROLE_MISMATCH", `This account is not a ${expectedRole} account.`);
+    }
+
+    if (user.role === "coach" && user.status === "pending") {
+      await writeAuditLog({
+        action: "auth_login_failed",
+        entityType: "auth",
+        entityId: user.id,
+        actorId: user.id,
+        actorRole: user.role,
+        metadata: { reason: "coach_pending", provider: "supabase", requestId: requestIdFromContext(c) },
+      });
+      return jsonErr(c, 403, "COACH_PENDING", "Your coach account is awaiting approval.");
+    }
+
+    await writeAuditLog({
+      action: "auth_login_succeeded",
+      entityType: "auth",
+      entityId: user.id,
+      actorId: user.id,
+      actorRole: user.role,
+      metadata: { expectedRole: expectedRole || null, provider: "supabase", requestId: requestIdFromContext(c) },
+    });
+    return jsonOk(c, {
+      accessToken: String(data.session.access_token || ""),
+      refreshToken: String(data.session.refresh_token || ""),
+      user,
+    });
+  }
   const users = (await kv.getByPrefix("user:")) as ApiUser[];
   const user = users.find((u) => u.email.toLowerCase() === email);
   if (!user) {
@@ -1271,8 +1562,8 @@ app.post(`${API_BASE}/auth/login`, async (c) => {
     });
     return jsonErr(c, 401, "UNAUTHENTICATED", "Invalid credentials.");
   }
-  const expectedPassword = await getUserPassword(user);
-  if (password !== expectedPassword) {
+  const expectedCredential = await getUserPasswordCredential(user);
+  if (!(await verifyPasswordCredential(password, expectedCredential))) {
     await writeAuditLog({
       action: "auth_login_failed",
       entityType: "auth",
@@ -1283,7 +1574,15 @@ app.post(`${API_BASE}/auth/login`, async (c) => {
     });
     return jsonErr(c, 401, "UNAUTHENTICATED", "Invalid credentials.");
   }
-  if (expectedRole && user.role !== expectedRole) {
+  // One-way upgrade: persist hashed credential for legacy/default plaintext flows.
+  if (!String(expectedCredential || "").startsWith("pbkdf2$")) {
+    try {
+      await setUserPassword(user.id, password);
+    } catch {
+      // ignore migration issues; login should still succeed
+    }
+  }
+  if (expectedRole && !roleMatchesExpected(user.role, expectedRole)) {
     await writeAuditLog({
       action: "auth_login_failed",
       entityType: "auth",
@@ -1293,6 +1592,18 @@ app.post(`${API_BASE}/auth/login`, async (c) => {
       metadata: { reason: "role_mismatch", expectedRole, requestId: requestIdFromContext(c) },
     });
     return jsonErr(c, 403, "ROLE_MISMATCH", `This account is not a ${expectedRole} account.`);
+  }
+  const normalizedStatus = isUserStatus(String((user as any)?.status || "")) ? (user as any).status : "active";
+  if (user.role === "coach" && normalizedStatus === "pending") {
+    await writeAuditLog({
+      action: "auth_login_failed",
+      entityType: "auth",
+      entityId: user.id,
+      actorId: user.id,
+      actorRole: user.role,
+      metadata: { reason: "coach_pending", requestId: requestIdFromContext(c) },
+    });
+    return jsonErr(c, 403, "COACH_PENDING", "Your coach account is awaiting approval.");
   }
   await writeAuditLog({
     action: "auth_login_succeeded",
@@ -1305,7 +1616,7 @@ app.post(`${API_BASE}/auth/login`, async (c) => {
   return jsonOk(c, {
     accessToken: `mock-access-${user.id}`,
     refreshToken: `mock-refresh-${user.id}`,
-    user,
+    user: { ...user, status: normalizedStatus },
   });
 });
 
@@ -1336,7 +1647,9 @@ app.post(`${API_BASE}/auth/signup`, async (c) => {
     return jsonErr(c, 400, "VALIDATION_ERROR", "Invalid role.");
   }
   const requestedRole = roleRaw as Role;
-  if ((requestedRole === "admin" || requestedRole === "staff") && !allowPrivilegedSignup()) {
+  const suppliedAdminCode = String(body?.adminCode || "").trim();
+
+  if (requestedRole === "staff" && !allowPrivilegedSignup()) {
     await writeAuditLog({
       action: "auth_signup_failed",
       entityType: "auth",
@@ -1345,9 +1658,28 @@ app.post(`${API_BASE}/auth/signup`, async (c) => {
       actorRole: "player",
       metadata: { reason: "privileged_role_forbidden", role: requestedRole, email, requestId: requestIdFromContext(c) },
     });
-    return jsonErr(c, 403, "FORBIDDEN", "Public signup cannot create admin or staff accounts.");
+    return jsonErr(c, 403, "FORBIDDEN", "Public signup cannot create staff accounts.");
   }
+  if (requestedRole === "admin") {
+    const expectedCode = adminSignupCode();
+    if (!expectedCode) {
+      return jsonErr(c, 403, "FORBIDDEN", "Admin signup is disabled. Please contact the administrator.");
+    }
+    if (!suppliedAdminCode || suppliedAdminCode !== expectedCode) {
+      await writeAuditLog({
+        action: "auth_signup_failed",
+        entityType: "auth",
+        entityId: email || "unknown",
+        actorId: "anonymous",
+        actorRole: "player",
+        metadata: { reason: "invalid_admin_code", email, requestId: requestIdFromContext(c) },
+      });
+      return jsonErr(c, 403, "FORBIDDEN", "Invalid admin code.");
+    }
+  }
+
   const role: Role = requestedRole;
+  const status: UserStatus = role === "coach" ? "pending" : "active";
   const users = (await kv.getByPrefix("user:")) as ApiUser[];
   if (users.some((u) => u.email.toLowerCase() === email)) {
     await writeAuditLog({
@@ -1360,83 +1692,114 @@ app.post(`${API_BASE}/auth/signup`, async (c) => {
     });
     return jsonErr(c, 409, "CONFLICT", "Email already exists.");
   }
+  const name = String(body?.name || "").trim() || email.split("@")[0] || "User";
+  const phone = String(body?.phone || "").trim();
+  const coachDraft = role === "coach" ? parseCoachRegistrationDraft(body) : null;
   if (role === "coach") {
-    const draft = parseCoachRegistrationDraft(body);
-    const draftError = validateCoachRegistrationDraft(draft);
+    const draftError = validateCoachRegistrationDraft(coachDraft!);
     if (draftError) return jsonErr(c, 400, "VALIDATION_ERROR", draftError);
-    const registrations = await getCoachRegistrations();
-    const existingPending = findLatestCoachRegistrationByEmail(registrations, email, ["pending"]);
-    if (existingPending) {
-      return jsonErr(c, 409, "CONFLICT", "A coach registration request for this email is already pending.");
+  }
+
+  if (authMode() === "supabase") {
+    if (!hasSupabaseAuthEnv()) {
+      return jsonErr(
+        c,
+        500,
+        "MISCONFIGURED",
+        "Supabase auth mode requires SUPABASE_URL and SUPABASE_ANON_KEY to be set.",
+      );
     }
-    const existingRejected = findLatestCoachRegistrationByEmail(registrations, email, ["rejected"]);
-    if (existingRejected) {
-      const updatedRegistration: ApiCoachRegistration = {
-        ...existingRejected,
-        password,
-        name: draft.name,
-        phone: draft.phone,
-        coachProfile: draft.coachProfile,
-        coachExpertise: draft.coachExpertise,
-        verificationMethod: draft.verificationMethod as ApiCoachRegistration["verificationMethod"],
-        verificationDocumentName: draft.verificationDocumentName,
-        verificationId: draft.verificationId,
-        verificationNotes: draft.verificationNotes,
-        status: "pending",
-        reviewNote: undefined,
-        updatedAt: nowIso(),
-      };
-      await kv.set(`coachreg:${updatedRegistration.id}`, updatedRegistration);
+    const supabase = await supabaseAnonClient();
+    const { data, error } = await supabase.auth.signUp({
+      email,
+      password,
+      options: {
+        data: {
+          name,
+          phone,
+          role,
+          status,
+        },
+      },
+    });
+    if (error || !data?.user?.id) {
       await writeAuditLog({
-        action: "coach_registration_resubmitted",
-        entityType: "coach_registration",
-        entityId: updatedRegistration.id,
+        action: "auth_signup_failed",
+        entityType: "auth",
+        entityId: email,
         actorId: "anonymous",
         actorRole: "player",
-        metadata: { email, requestId: requestIdFromContext(c) },
+        metadata: {
+          reason: "provider_error",
+          provider: "supabase",
+          email,
+          role,
+          message: error?.message || "signup_failed",
+          requestId: requestIdFromContext(c),
+        },
       });
+      const message = error?.message || "Signup failed.";
+      const isConflict =
+        message.toLowerCase().includes("already registered") ||
+        message.toLowerCase().includes("already exists") ||
+        message.toLowerCase().includes("exists");
+      return jsonErr(c, isConflict ? 409 : 400, isConflict ? "CONFLICT" : "VALIDATION_ERROR", message);
+    }
+
+    const created: ApiUser = {
+      id: String(data.user.id),
+      email,
+      name,
+      role,
+      status,
+      phone: phone || undefined,
+      coachProfile: role === "coach" ? coachDraft!.coachProfile : undefined,
+      coachExpertise: role === "coach" ? (coachDraft!.coachExpertise || []) : undefined,
+      coachVerificationStatus: role === "coach" ? "pending" : undefined,
+      coachVerificationMethod: role === "coach"
+        ? (coachDraft!.verificationMethod as ApiUser["coachVerificationMethod"])
+        : undefined,
+      coachVerificationDocumentName: role === "coach" ? coachDraft!.verificationDocumentName : undefined,
+      coachVerificationId: role === "coach" ? coachDraft!.verificationId : undefined,
+      coachVerificationNotes: role === "coach" ? coachDraft!.verificationNotes : undefined,
+      coachVerificationSubmittedAt: role === "coach" ? nowIso() : undefined,
+      createdAt: nowIso(),
+    };
+    await kv.set(`user:${created.id}`, created);
+    await writeAuditLog({
+      action: "auth_signup_succeeded",
+      entityType: "auth",
+      entityId: created.id,
+      actorId: created.id,
+      actorRole: created.role,
+      metadata: { provider: "supabase", email, roleAssigned: role, requestedRole, requestId: requestIdFromContext(c) },
+    });
+    if (role === "coach") {
       return jsonOk(c, {
         pending: true,
         role: "coach",
-        message: "Coach registration resubmitted and pending admin verification.",
+        message: "Your coach account request is under review by the administrator.",
       });
     }
-    const registration: ApiCoachRegistration = {
-      id: id(),
-      email,
-      password,
-      name: draft.name,
-      phone: draft.phone,
-      coachProfile: draft.coachProfile,
-      coachExpertise: draft.coachExpertise,
-      verificationMethod: draft.verificationMethod as ApiCoachRegistration["verificationMethod"],
-      verificationDocumentName: draft.verificationDocumentName,
-      verificationId: draft.verificationId,
-      verificationNotes: draft.verificationNotes,
-      status: "pending",
-      createdAt: nowIso(),
-      updatedAt: nowIso(),
-    };
-    await kv.set(`coachreg:${registration.id}`, registration);
-    await writeAuditLog({
-      action: "coach_registration_submitted",
-      entityType: "coach_registration",
-      entityId: registration.id,
-      actorId: "anonymous",
-      actorRole: "player",
-      metadata: { email, requestId: requestIdFromContext(c) },
-    });
-    return jsonOk(c, {
-      pending: true,
-      role: "coach",
-      message: "Coach registration submitted and pending admin verification.",
-    });
+    return jsonOk(c, created);
   }
   const newUser: ApiUser = {
     id: id(),
     email,
-    name: email.split("@")[0],
+    name,
     role,
+    status,
+    phone: phone || undefined,
+    coachProfile: role === "coach" ? coachDraft!.coachProfile : undefined,
+    coachExpertise: role === "coach" ? (coachDraft!.coachExpertise || []) : undefined,
+    coachVerificationStatus: role === "coach" ? "pending" : undefined,
+    coachVerificationMethod: role === "coach"
+      ? (coachDraft!.verificationMethod as ApiUser["coachVerificationMethod"])
+      : undefined,
+    coachVerificationDocumentName: role === "coach" ? coachDraft!.verificationDocumentName : undefined,
+    coachVerificationId: role === "coach" ? coachDraft!.verificationId : undefined,
+    coachVerificationNotes: role === "coach" ? coachDraft!.verificationNotes : undefined,
+    coachVerificationSubmittedAt: role === "coach" ? nowIso() : undefined,
     createdAt: nowIso(),
   };
   await kv.set(`user:${newUser.id}`, newUser);
@@ -1449,6 +1812,13 @@ app.post(`${API_BASE}/auth/signup`, async (c) => {
     actorRole: newUser.role,
     metadata: { email: newUser.email, roleAssigned: role, requestedRole, requestId: requestIdFromContext(c) },
   });
+  if (role === "coach") {
+    return jsonOk(c, {
+      pending: true,
+      role: "coach",
+      message: "Your coach account request is under review by the administrator.",
+    });
+  }
   return jsonOk(c, newUser);
 });
 
@@ -1487,6 +1857,15 @@ app.post(`${API_BASE}/auth/reset-password`, async (c) => {
       requestId: requestIdFromContext(c),
     },
   });
+
+  if (authMode() === "supabase" && hasSupabaseAuthEnv()) {
+    try {
+      const supabase = await supabaseAnonClient();
+      await supabase.auth.resetPasswordForEmail(email);
+    } catch {
+      // Ignore provider errors to avoid user enumeration.
+    }
+  }
 
   return jsonOk(c, {
     sent: true,
@@ -1570,13 +1949,21 @@ app.post(`${API_BASE}/auth/coach-registration-update`, async (c) => {
   const registrations = await getCoachRegistrations();
   const pending = findLatestCoachRegistrationByEmail(registrations, email, ["pending"]);
   if (!pending) return jsonErr(c, 404, "NOT_FOUND", "No pending coach registration found for this email.");
-  if (pending.password !== password) return jsonErr(c, 401, "UNAUTHENTICATED", "Invalid credentials.");
+  {
+    const credential = String(pending.passwordHash || pending.password || "").trim();
+    if (!(await verifyPasswordCredential(password, credential))) {
+      return jsonErr(c, 401, "UNAUTHENTICATED", "Invalid credentials.");
+    }
+  }
   const draft = parseCoachRegistrationDraft(body, pending);
   const draftError = validateCoachRegistrationDraft(draft);
   if (draftError) return jsonErr(c, 400, "VALIDATION_ERROR", draftError);
 
+  const passwordHash = pending.passwordHash || (await hashPassword(password));
   const updated: ApiCoachRegistration = {
     ...pending,
+    password: undefined,
+    passwordHash,
     name: draft.name,
     phone: draft.phone,
     coachProfile: draft.coachProfile,
@@ -1621,8 +2008,11 @@ app.post(`${API_BASE}/auth/coach-registration-withdraw`, async (c) => {
   if (!pending) {
     return jsonErr(c, 404, "NOT_FOUND", "No pending coach registration found for this email.");
   }
-  if (pending.password !== password) {
-    return jsonErr(c, 401, "UNAUTHENTICATED", "Invalid credentials.");
+  {
+    const credential = String(pending.passwordHash || pending.password || "").trim();
+    if (!(await verifyPasswordCredential(password, credential))) {
+      return jsonErr(c, 401, "UNAUTHENTICATED", "Invalid credentials.");
+    }
   }
 
   await kv.del(`coachreg:${pending.id}`);
@@ -1658,14 +2048,21 @@ app.post(`${API_BASE}/auth/coach-registration-resubmit`, async (c) => {
   const registrations = await getCoachRegistrations();
   const rejected = findLatestCoachRegistrationByEmail(registrations, email, ["rejected"]);
   if (!rejected) return jsonErr(c, 404, "NOT_FOUND", "No rejected coach registration found for this email.");
-  if (rejected.password !== password) return jsonErr(c, 401, "UNAUTHENTICATED", "Invalid credentials.");
+  {
+    const credential = String(rejected.passwordHash || rejected.password || "").trim();
+    if (!(await verifyPasswordCredential(password, credential))) {
+      return jsonErr(c, 401, "UNAUTHENTICATED", "Invalid credentials.");
+    }
+  }
   const draft = parseCoachRegistrationDraft(body, rejected);
   const draftError = validateCoachRegistrationDraft(draft);
   if (draftError) return jsonErr(c, 400, "VALIDATION_ERROR", draftError);
 
+  const passwordHash = await hashPassword(password);
   const updated: ApiCoachRegistration = {
     ...rejected,
-    password,
+    password: undefined,
+    passwordHash,
     name: draft.name,
     phone: draft.phone,
     coachProfile: draft.coachProfile,
@@ -1717,8 +2114,53 @@ app.post(`${API_BASE}/auth/change-password`, async (c) => {
     return jsonErr(c, 400, "VALIDATION_ERROR", `newPassword must be at least ${passwordMinLength} characters.`);
   }
 
-  const expectedPassword = await getUserPassword(result.user);
-  if (currentPassword !== expectedPassword) {
+  if (authMode() === "supabase") {
+    if (!hasSupabaseAuthEnv() || !hasSupabaseServiceEnv()) {
+      return jsonErr(
+        c,
+        500,
+        "MISCONFIGURED",
+        "Supabase auth mode requires SUPABASE_URL, SUPABASE_ANON_KEY, and SUPABASE_SERVICE_ROLE_KEY to be set.",
+      );
+    }
+
+    const supabase = await supabaseAnonClient();
+    const { error: verifyError } = await supabase.auth.signInWithPassword({
+      email: String(result.user.email || "").trim().toLowerCase(),
+      password: currentPassword,
+    });
+    if (verifyError) {
+      await writeAuditLog({
+        action: "auth_change_password_failed",
+        entityType: "auth",
+        entityId: result.user.id,
+        actorId: result.user.id,
+        actorRole: result.user.role,
+        metadata: { reason: "current_password_mismatch", provider: "supabase", requestId: requestIdFromContext(c) },
+      });
+      return jsonErr(c, 401, "UNAUTHENTICATED", "Current password is incorrect.");
+    }
+
+    const admin = await supabaseServiceClient();
+    const { error: updateError } = await admin.auth.admin.updateUserById(result.user.id, { password: newPassword });
+    if (updateError) {
+      return jsonErr(c, 500, "PROVIDER_ERROR", updateError.message || "Failed to update password.");
+    }
+
+    await writeAuditLog({
+      action: "auth_change_password_succeeded",
+      entityType: "auth",
+      entityId: result.user.id,
+      actorId: result.user.id,
+      actorRole: result.user.role,
+      metadata: { provider: "supabase", requestId: requestIdFromContext(c) },
+    });
+
+    return jsonOk(c, { changed: true });
+  }
+
+  const expectedCredential = await getUserPasswordCredential(result.user);
+  if (!(await verifyPasswordCredential(currentPassword, expectedCredential))) {
     await writeAuditLog({
       action: "auth_change_password_failed",
       entityType: "auth",
@@ -1893,11 +2335,52 @@ app.post(`${API_BASE}/admin/coaches/:id/verification/approve`, async (c) => {
     if (users.some((u) => u.email.toLowerCase() === registration.email.toLowerCase())) {
       return jsonErr(c, 409, "CONFLICT", "Email already exists.");
     }
+
+    // In Supabase auth mode, create the auth identity via service role and prompt the coach to set a password via reset email.
+    let coachUserId: string = id();
+    if (authMode() === "supabase") {
+      if (!hasSupabaseServiceEnv()) {
+        return jsonErr(
+          c,
+          500,
+          "MISCONFIGURED",
+          "Supabase auth coach approval requires SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY.",
+        );
+      }
+      const admin = await supabaseServiceClient();
+      const tempPassword = randomTempPassword();
+      const { data, error } = await admin.auth.admin.createUser({
+        email: registration.email,
+        password: tempPassword,
+        email_confirm: true,
+        user_metadata: {
+          name: registration.name,
+          phone: registration.phone || "",
+          role: "coach",
+        },
+      });
+      if (error || !data?.user?.id) {
+        const msg = String(error?.message || "Failed to create auth user.");
+        const isConflict =
+          msg.toLowerCase().includes("already") ||
+          msg.toLowerCase().includes("exists") ||
+          msg.toLowerCase().includes("registered");
+        return jsonErr(c, isConflict ? 409 : 502, isConflict ? "CONFLICT" : "PROVIDER_ERROR", msg);
+      }
+      coachUserId = String(data.user.id);
+      try {
+        await admin.auth.resetPasswordForEmail(registration.email);
+      } catch {
+        // If SMTP isn't configured, this may fail. The account is still created; admin can trigger reset later.
+      }
+    }
+
     const createdCoach: ApiUser = {
-      id: id(),
+      id: coachUserId,
       email: registration.email,
       name: registration.name,
       role: "coach",
+      status: "active",
       phone: registration.phone,
       coachProfile: registration.coachProfile,
       coachExpertise: registration.coachExpertise || [],
@@ -1910,9 +2393,18 @@ app.post(`${API_BASE}/admin/coaches/:id/verification/approve`, async (c) => {
       createdAt: nowIso(),
     };
     await kv.set(`user:${createdCoach.id}`, createdCoach);
-    await setUserPassword(createdCoach.id, registration.password);
+
+    if (authMode() !== "supabase") {
+      const credential = String(registration.passwordHash || registration.password || "").trim();
+      if (!credential) {
+        return jsonErr(c, 500, "INTERNAL_ERROR", "Coach registration is missing a password credential.");
+      }
+      await setUserPasswordCredential(createdCoach.id, credential.startsWith("pbkdf2$") ? credential : await hashPassword(credential));
+    }
     await kv.set(`coachreg:${registration.id}`, {
       ...registration,
+      password: undefined,
+      passwordHash: undefined,
       status: "approved",
       reviewNote: String(body?.notes || registration.reviewNote || "").trim() || registration.reviewNote,
       updatedAt: nowIso(),
@@ -1945,6 +2437,7 @@ app.post(`${API_BASE}/admin/coaches/:id/verification/approve`, async (c) => {
   const updated: ApiUser = {
     ...coach,
     role: "coach",
+    status: "active",
     coachVerificationStatus: "verified",
     coachVerificationNotes: String(body?.notes || coach.coachVerificationNotes || "").trim() || undefined,
   };
@@ -1995,6 +2488,7 @@ app.post(`${API_BASE}/admin/coaches/:id/verification/reject`, async (c) => {
   const updated: ApiUser = {
     ...coach,
     role: coach.role === "admin" || coach.role === "staff" ? coach.role : "player",
+    status: "active",
     coachVerificationStatus: "rejected",
     coachVerificationNotes: reason || coach.coachVerificationNotes,
   };
@@ -2534,6 +3028,7 @@ app.post(`${API_BASE}/courts`, async (c) => {
     hourlyRate: Number(body?.hourlyRate || 0),
     peakHourRate: body?.peakHourRate ? Number(body.peakHourRate) : undefined,
     status: body?.status || "active",
+    imageUrl: body?.imageUrl ? String(body.imageUrl) : undefined,
     operatingHours: body?.operatingHours || { start: "07:00", end: "22:00" },
   };
   await kv.set(`court:${court.id}`, court);
@@ -2668,6 +3163,113 @@ app.get(`${API_BASE}/bookings/history`, async (c) => {
       cancelled: scoped.filter((b) => b.status === "cancelled").length,
     },
   });
+});
+
+app.post(`${API_BASE}/bookings/quick`, async (c) => {
+  const bookingLimit = rateLimitConfig("quick_booking_create", { max: 10, windowSeconds: 60 });
+  const bookingRateErr = await enforceRateLimit(c, {
+    scope: "quick_booking_create",
+    key: requestClientKey(c),
+    max: bookingLimit.max,
+    windowSeconds: bookingLimit.windowSeconds,
+  });
+  if (bookingRateErr) return bookingRateErr;
+
+  const body = await c.req.json().catch(() => ({}));
+  const fullName = String(body?.fullName || "").trim();
+  const contactNumber = String(body?.contactNumber || "").trim();
+  const courtId = String(body?.courtId || "");
+  const date = String(body?.date || "");
+  const startTime = String(body?.startTime || "");
+  const endTime = String(body?.endTime || "");
+  const duration = Number(body?.duration || 0);
+  const type = String(body?.type || "private");
+  const amount = Number(body?.amount ?? 0);
+
+  if (!fullName) return jsonErr(c, 400, "VALIDATION_ERROR", "fullName is required.");
+  if (!contactNumber) return jsonErr(c, 400, "VALIDATION_ERROR", "contactNumber is required.");
+  if (!courtId || !date || !startTime || !endTime || !duration) {
+    return jsonErr(c, 400, "VALIDATION_ERROR", "courtId, date, startTime, endTime, and duration are required.");
+  }
+  if (!isValidDate(date) || !isValidTime(startTime) || !isValidTime(endTime)) {
+    return jsonErr(c, 400, "VALIDATION_ERROR", "Invalid date or time format.");
+  }
+  if (minutesBetween(startTime, endTime) <= 0) {
+    return jsonErr(c, 400, "VALIDATION_ERROR", "endTime must be later than startTime.");
+  }
+  if (!isValidBookingType(type)) {
+    return jsonErr(c, 400, "VALIDATION_ERROR", "Invalid booking type.");
+  }
+  if (duration <= 0) {
+    return jsonErr(c, 400, "VALIDATION_ERROR", "Duration must be a positive number.");
+  }
+  if (duration !== minutesBetween(startTime, endTime)) {
+    return jsonErr(c, 400, "VALIDATION_ERROR", "Duration must match startTime and endTime.");
+  }
+  if (!isValidCurrencyAmount(amount)) {
+    return jsonErr(c, 400, "VALIDATION_ERROR", "amount must be a non-negative number with up to 2 decimal places.");
+  }
+
+  const court = (await kv.get(`court:${courtId}`)) as ApiCourt | null;
+  if (!court) return jsonErr(c, 404, "NOT_FOUND", "Court not found.");
+  if (!isWithinOperatingHours(startTime, endTime, court.operatingHours)) {
+    return jsonErr(c, 409, "CONFLICT", "Booking time is outside court operating hours.");
+  }
+
+  const activeHolds = await getActiveBookingHolds(courtId, date);
+  const holdConflict = activeHolds.find((hold) => overlaps(hold.startTime, hold.endTime, startTime, endTime));
+  if (holdConflict) {
+    return jsonErr(c, 409, "CONFLICT", "Time slot is temporarily held by another user.");
+  }
+
+  const QUICK_LABEL = "Quick Reservation / Senior-Friendly Booking";
+  const notes = [QUICK_LABEL, `Full Name: ${fullName}`, `Contact Number: ${contactNumber}`].join("\n");
+  const guestUserId = "quick-guest";
+  const existingGuest = (await kv.get(`user:${guestUserId}`)) as ApiUser | null;
+  if (!existingGuest) {
+    await kv.set(`user:${guestUserId}`, {
+      id: guestUserId,
+      email: "quick-booking@guest.local",
+      name: "Quick Reservation",
+      role: "player",
+      status: "active",
+      createdAt: nowIso(),
+    } satisfies ApiUser);
+  }
+
+  const payload: ApiBooking = {
+    id: id(),
+    courtId,
+    userId: guestUserId,
+    type: type as ApiBooking["type"],
+    date,
+    startTime,
+    endTime,
+    duration,
+    status: "pending",
+    paymentStatus: "unpaid",
+    amount,
+    players: [],
+    maxPlayers: 4,
+    notes,
+    checkedIn: false,
+    receiptToken: id(),
+    createdAt: nowIso(),
+    updatedAt: nowIso(),
+  };
+
+  const all = (await kv.getByPrefix("booking:")) as ApiBooking[];
+  const conflict = all.find(
+    (b) =>
+      b.courtId === payload.courtId &&
+      b.date === payload.date &&
+      b.status !== "cancelled" &&
+      overlaps(b.startTime, b.endTime, payload.startTime, payload.endTime),
+  );
+  if (conflict) return jsonErr(c, 409, "CONFLICT", "Time slot conflict detected.");
+
+  await kv.set(`booking:${payload.id}`, payload);
+  return jsonOk(c, okPayload(payload));
 });
 
 app.get(`${API_BASE}/bookings/:id`, async (c) => {
@@ -4376,14 +4978,16 @@ app.get(`${API_BASE}/bookings/available-slots`, async (c) => {
   if (!courtId || !date) return jsonErr(c, 400, "VALIDATION_ERROR", "courtId and date are required.");
   if (!isValidDate(date)) return jsonErr(c, 400, "VALIDATION_ERROR", "date must be YYYY-MM-DD.");
   if (!isValidBookingType(bookingType)) return jsonErr(c, 400, "VALIDATION_ERROR", "Invalid bookingType.");
+  const facility = await getFacilityConfig();
   const court = (await kv.get(`court:${courtId}`)) as ApiCourt | null;
   if (!court) return jsonErr(c, 404, "NOT_FOUND", "Court not found.");
   const bookings = (await kv.getByPrefix("booking:")) as ApiBooking[];
   const holds = await getActiveBookingHolds(courtId, date);
   const open = toMinutes(court.operatingHours.start);
   const close = toMinutes(court.operatingHours.end);
+  const step = Math.max(15, Number(facility.bookingInterval || 60));
   const slots: string[] = [];
-  for (let minutes = open; minutes < close; minutes += 60) {
+  for (let minutes = open; minutes < close; minutes += step) {
     const hh = String(Math.floor(minutes / 60)).padStart(2, "0");
     const mm = String(minutes % 60).padStart(2, "0");
     const time = `${hh}:${mm}`;
@@ -4403,7 +5007,7 @@ app.get(`${API_BASE}/bookings/available-slots`, async (c) => {
         if (totalPlayers >= 4) isAvailable = false;
       }
     }
-    const slotEndMinutes = minutes + 60;
+    const slotEndMinutes = minutes + step;
     const slotStart = `${String(Math.floor(minutes / 60)).padStart(2, "0")}:${String(minutes % 60).padStart(2, "0")}`;
     const slotEnd = `${String(Math.floor(slotEndMinutes / 60)).padStart(2, "0")}:${String(slotEndMinutes % 60).padStart(
       2,
@@ -6010,7 +6614,27 @@ app.post(`${API_BASE}/admin/audit-logs/purge`, async (c) => {
   return jsonOk(c, { dryRun, beforeDate, matched: targets.length, deleted: dryRun ? 0 : targets.length });
 });
 
-app.get(`${API_BASE}/health`, (c) => jsonOk(c, { status: "ok" }));
+app.get(`${API_BASE}/health`, async (c) =>
+  jsonOk(c, {
+    status: "ok",
+    storage: kv.getStoreInfo(),
+    db: await kv.getDbHealth(),
+    auth: {
+      mode: authMode(),
+      requireBearer: bearerAuthRequired(),
+      supabase: {
+        hasAnonEnv: hasSupabaseAuthEnv(),
+        hasServiceEnv: hasSupabaseServiceEnv(),
+      },
+    },
+    payments: {
+      provider: paymentProvider(),
+    },
+    passwordPolicy: {
+      minLength: minimumPasswordLength(),
+    },
+  }),
+);
 
 app.notFound((c) => jsonErr(c, 404, "NOT_FOUND", "Route not found."));
 

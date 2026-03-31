@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useApp } from '@/context/AppContext';
+import type { Booking } from '@/types';
 import { useLocation, useNavigate } from 'react-router-dom';
 import {
   ArrowLeft,
@@ -23,6 +24,15 @@ export function CheckIn() {
   const location = useLocation();
   const navigate = useNavigate();
   const [showQr, setShowQr] = useState(false);
+
+  const recentlyFromPayment = useMemo(() => {
+    try {
+      const ts = Number(sessionStorage.getItem('ventra_recent_payment_flow') || 0);
+      return Boolean(ts && Date.now() - ts < 15_000);
+    } catch {
+      return false;
+    }
+  }, []);
 
   const [scanInput, setScanInput] = useState('');
   const [manualBookingId, setManualBookingId] = useState('');
@@ -68,19 +78,31 @@ export function CheckIn() {
     return upcoming || null;
   }, [bookings, currentUser]);
 
-  const qrValue = activeBooking
+  const [visibleBooking, setVisibleBooking] = useState<Booking | null>(() => activeBooking);
+
+  useEffect(() => {
+    const emptyDelayMs = recentlyFromPayment ? 8000 : 600;
+    if (activeBooking) {
+      setVisibleBooking(activeBooking);
+      return;
+    }
+    const timeout = window.setTimeout(() => setVisibleBooking(null), emptyDelayMs);
+    return () => window.clearTimeout(timeout);
+  }, [activeBooking, recentlyFromPayment]);
+
+  const qrValue = visibleBooking
     ? JSON.stringify({
-        bookingId: activeBooking.id,
-        userId: activeBooking.userId,
-        courtId: activeBooking.courtId,
-        date: format(new Date(activeBooking.date), 'yyyy-MM-dd'),
-        startTime: activeBooking.startTime,
-        endTime: activeBooking.endTime,
+        bookingId: visibleBooking.id,
+        userId: visibleBooking.userId,
+        courtId: visibleBooking.courtId,
+        date: format(new Date(visibleBooking.date), 'yyyy-MM-dd'),
+        startTime: visibleBooking.startTime,
+        endTime: visibleBooking.endTime,
       })
     : 'NO_BOOKING';
 
-  const bookingCourt = activeBooking
-    ? courts.find((c) => c.id === activeBooking.courtId)
+  const bookingCourt = visibleBooking
+    ? courts.find((c) => c.id === visibleBooking.courtId)
     : null;
 
   const courtName = bookingCourt
@@ -92,12 +114,12 @@ export function CheckIn() {
     return format(parsed, 'h:mm a').toLowerCase();
   };
 
-  const bookingDateText = activeBooking
-    ? format(new Date(activeBooking.date), 'EEEE, MMMM d, yyyy')
+  const bookingDateText = visibleBooking
+    ? format(new Date(visibleBooking.date), 'EEEE, MMMM d, yyyy')
     : 'No booking date';
 
-  const timeRange = activeBooking
-    ? `${formatTo12Hour(activeBooking.startTime)} - ${formatTo12Hour(activeBooking.endTime)}`
+  const timeRange = visibleBooking
+    ? `${formatTo12Hour(visibleBooking.startTime)} - ${formatTo12Hour(visibleBooking.endTime)}`
     : 'No booking schedule';
 
   const readBookingIdFromScan = (raw: string): string => {
@@ -493,7 +515,7 @@ export function CheckIn() {
                   <h2 className="text-2xl font-semibold tracking-tight">Today's Booking</h2>
                 </div>
 
-                {activeBooking ? (
+                {visibleBooking ? (
                   <div className="rounded-2xl bg-white border border-slate-200 p-5 flex items-start gap-3">
                     <MapPin className="w-6 h-6 mt-1 text-slate-800" />
                     <div className="leading-tight">
@@ -513,8 +535,8 @@ export function CheckIn() {
               <div className="flex justify-start lg:justify-end">
                 <button
                   type="button"
-                  onClick={() => activeBooking && setShowQr(true)}
-                  disabled={!activeBooking}
+                  onClick={() => visibleBooking && setShowQr(true)}
+                  disabled={!visibleBooking}
                   className="bg-[#1F464A] hover:bg-[#1b3f43] disabled:opacity-60 disabled:cursor-not-allowed text-white rounded-2xl px-6 py-5 min-w-[250px] md:min-w-[290px] transition-all text-left shadow-sm hover:shadow-md"
                 >
                   <div className="flex items-start gap-3">

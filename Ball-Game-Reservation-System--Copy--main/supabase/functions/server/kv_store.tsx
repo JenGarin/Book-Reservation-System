@@ -53,6 +53,123 @@ const hasSupabaseEnv = () => {
   }
 };
 const inMemoryStore = new Map<string, any>();
+
+type StoreMode = "memory" | "supabase";
+type StoreInfo = { mode: StoreMode; missingEnv: string[] };
+type DbHealth = {
+  enabled: boolean;
+  reachable: boolean;
+  missingTables: string[];
+  checkedAt: string;
+  error?: string;
+};
+
+const missingSupabaseEnv = (): string[] => {
+  const missing: string[] = [];
+  try {
+    if (!Deno.env.get("SUPABASE_URL")) missing.push("SUPABASE_URL");
+    if (!Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")) missing.push("SUPABASE_SERVICE_ROLE_KEY");
+  } catch {
+    // In some runtimes env access can be restricted; treat as missing.
+    missing.push("SUPABASE_URL", "SUPABASE_SERVICE_ROLE_KEY");
+  }
+  return missing;
+};
+
+export const getStoreInfo = (): StoreInfo => {
+  const enabled = hasSupabaseEnv();
+  return { mode: enabled ? "supabase" : "memory", missingEnv: enabled ? [] : missingSupabaseEnv() };
+};
+
+let cachedDbHealth: { atMs: number; value: DbHealth } | null = null;
+const DB_HEALTH_TTL_MS = 15_000;
+
+const isMissingTableError = (error: unknown) => {
+  const message = error instanceof Error ? error.message.toLowerCase() : String(error || "").toLowerCase();
+  return message.includes("relation") && message.includes("does not exist");
+};
+
+const probeTable = async (table: string): Promise<"ok" | "missing"> => {
+  const supabase = await client();
+  const { error } = await supabase.from(table).select("*").limit(1);
+  if (!error) return "ok";
+  if (isMissingTableError(new Error(error.message))) return "missing";
+  throw new Error(error.message);
+};
+
+export const getDbHealth = async (): Promise<DbHealth> => {
+  const now = Date.now();
+  if (cachedDbHealth && now - cachedDbHealth.atMs < DB_HEALTH_TTL_MS) return cachedDbHealth.value;
+
+  const checkedAt = new Date().toISOString();
+  const store = getStoreInfo();
+  if (store.mode !== "supabase") {
+    const value: DbHealth = {
+      enabled: false,
+      reachable: false,
+      missingTables: [],
+      checkedAt,
+    };
+    cachedDbHealth = { atMs: now, value };
+    return value;
+  }
+
+  // Tables expected by the backend when running in persistent mode.
+  const requiredTables = [
+    "kv_store_ce0562bb",
+    "app_users",
+    "courts",
+    "bookings",
+    "membership_plans",
+    "subscriptions",
+    "notifications",
+    "coach_applications",
+    "audit_logs",
+    "booking_holds",
+    "idempotency_records",
+    "payment_transactions",
+  ];
+
+  try {
+    const missingTables: string[] = [];
+    for (const table of requiredTables) {
+      const status = await probeTable(table);
+      if (status === "missing") missingTables.push(table);
+    }
+
+    const value: DbHealth = {
+      enabled: true,
+      reachable: true,
+      missingTables,
+      checkedAt,
+    };
+    cachedDbHealth = { atMs: now, value };
+    return value;
+  } catch (error) {
+    const value: DbHealth = {
+      enabled: true,
+      reachable: false,
+      missingTables: [],
+      checkedAt,
+      error: error instanceof Error ? error.message : String(error || ""),
+    };
+    cachedDbHealth = { atMs: now, value };
+    return value;
+  }
+};
+
+let warnedInMemory = false;
+const warnIfInMemory = () => {
+  if (warnedInMemory) return;
+  const info = getStoreInfo();
+  if (info.mode === "memory") {
+    console.warn(
+      `[server] Storage is running in-memory (non-persistent). Missing env: ${info.missingEnv.join(", ")}`,
+    );
+    warnedInMemory = true;
+  }
+};
+
 const isMissingRelationError = (error: unknown) => {
   const message = error instanceof Error ? error.message.toLowerCase() : String(error || "").toLowerCase();
   return message.includes("relation") && message.includes("does not exist");
@@ -60,6 +177,8 @@ const isMissingRelationError = (error: unknown) => {
 
 export const __resetForTests = () => {
   inMemoryStore.clear();
+  warnedInMemory = false;
+  cachedDbHealth = null;
 };
 
 const parseKey = (key: string): { prefix: EntityPrefix | null; id: string | null } => {
@@ -499,6 +618,7 @@ const listEntity = async (prefix: EntityPrefix): Promise<any[]> => {
 
 export const set = async (key: string, value: any): Promise<void> => {
   if (!hasSupabaseEnv()) {
+    warnIfInMemory();
     inMemoryStore.set(key, structuredClone(value));
     return;
   }
@@ -522,6 +642,7 @@ export const set = async (key: string, value: any): Promise<void> => {
 
 export const get = async (key: string): Promise<any> => {
   if (!hasSupabaseEnv()) {
+    warnIfInMemory();
     const value = inMemoryStore.get(key);
     return value === undefined ? null : structuredClone(value);
   }
@@ -549,6 +670,7 @@ export const get = async (key: string): Promise<any> => {
 
 export const del = async (key: string): Promise<void> => {
   if (!hasSupabaseEnv()) {
+    warnIfInMemory();
     inMemoryStore.delete(key);
     return;
   }
@@ -576,6 +698,7 @@ export const mset = async (keys: string[], values: any[]): Promise<void> => {
   }
 
   if (!hasSupabaseEnv()) {
+    warnIfInMemory();
     for (let i = 0; i < keys.length; i += 1) {
       inMemoryStore.set(keys[i], structuredClone(values[i]));
     }
@@ -610,6 +733,7 @@ export const mset = async (keys: string[], values: any[]): Promise<void> => {
 
 export const mget = async (keys: string[]): Promise<any[]> => {
   if (!hasSupabaseEnv()) {
+    warnIfInMemory();
     return keys.map((key) => {
       const value = inMemoryStore.get(key);
       return value === undefined ? null : structuredClone(value);
@@ -625,6 +749,7 @@ export const mget = async (keys: string[]): Promise<any[]> => {
 
 export const mdel = async (keys: string[]): Promise<void> => {
   if (!hasSupabaseEnv()) {
+    warnIfInMemory();
     for (const key of keys) inMemoryStore.delete(key);
     return;
   }
@@ -636,6 +761,7 @@ export const mdel = async (keys: string[]): Promise<void> => {
 
 export const getByPrefix = async (prefix: string): Promise<any[]> => {
   if (!hasSupabaseEnv()) {
+    warnIfInMemory();
     const out: any[] = [];
     for (const [key, value] of inMemoryStore.entries()) {
       if (key.startsWith(prefix)) out.push(structuredClone(value));

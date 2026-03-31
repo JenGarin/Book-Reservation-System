@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { useApp } from '@/context/AppContext';
 import { ArrowLeft, Receipt, Calendar, CreditCard, Download, Filter, Eye } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
@@ -28,6 +28,20 @@ export function PaymentHistory() {
   const [startDate, endDate] = dateRange;
   const [backendTransactions, setBackendTransactions] = useState<Transaction[]>([]);
   const [isLoadingBackendTransactions, setIsLoadingBackendTransactions] = useState(false);
+  const paymentFlowActive = useMemo(() => {
+    try {
+      const recent = Number(sessionStorage.getItem('ventra_recent_payment_flow') || 0);
+      const pendingStart = Number(sessionStorage.getItem('ventra_payment_pending_started_at') || 0);
+      const pendingIdsRaw = sessionStorage.getItem('ventra_payment_pending_booking_ids');
+      const pendingIds = pendingIdsRaw ? JSON.parse(pendingIdsRaw) : [];
+      const hasPending = Array.isArray(pendingIds) && pendingIds.length > 0;
+      const recentActive = Boolean(recent && Date.now() - recent < 15_000);
+      const pendingActive = hasPending && (!pendingStart || Date.now() - pendingStart < 30 * 60 * 1000);
+      return recentActive || pendingActive;
+    } catch {
+      return false;
+    }
+  }, []);
 
   const loadBackendTransactions = async () => {
     if (!usingBackendApi || !currentUser) return;
@@ -49,7 +63,12 @@ export function PaymentHistory() {
           bookingId: bookingId || undefined,
         };
       });
-      setBackendTransactions(txs);
+      setBackendTransactions((prev) => {
+        if (!txs.length && prev.length && paymentFlowActive) return prev;
+        const nextById = new Map(txs.map((t) => [t.id, t]));
+        const keptPrev = prev.filter((t) => !nextById.has(t.id));
+        return keptPrev.length ? [...txs, ...keptPrev] : txs;
+      });
     } catch (error) {
       console.error('Failed to load backend payment transactions:', error);
       toast.error('Failed to load backend payment transactions.');
@@ -61,7 +80,7 @@ export function PaymentHistory() {
   useEffect(() => {
     if (!usingBackendApi || !currentUser) return;
     void loadBackendTransactions();
-  }, [usingBackendApi, currentUser, bookings, courts]);
+  }, [usingBackendApi, currentUser?.id]);
 
   const bookingTransactions: Transaction[] = bookings
     .filter((b) => b.userId === currentUser?.id)
@@ -102,6 +121,17 @@ export function PaymentHistory() {
       return matchesType && matchesDate;
     })
     .sort((a, b) => b.date.getTime() - a.date.getTime());
+
+  const [visibleTransactions, setVisibleTransactions] = useState<Transaction[]>(() => allTransactions);
+  useEffect(() => {
+    const dropDelayMs = paymentFlowActive ? 8000 : 600;
+    if (allTransactions.length > 0) {
+      setVisibleTransactions(allTransactions);
+      return;
+    }
+    const timeout = window.setTimeout(() => setVisibleTransactions([]), dropDelayMs);
+    return () => window.clearTimeout(timeout);
+  }, [allTransactions, paymentFlowActive]);
 
   const totalSpent = allTransactions
     .filter((t) => t.status === 'paid' || t.status === 'completed')
@@ -285,14 +315,14 @@ Thank you for your business!
         )}
 
         <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm overflow-hidden">
-          {allTransactions.length === 0 ? (
+          {visibleTransactions.length === 0 ? (
             <div className="p-12 text-center text-slate-500 dark:text-slate-400">
               <CreditCard size={48} className="mx-auto mb-4 opacity-20" />
               <p>No transactions found.</p>
             </div>
           ) : (
             <div className="divide-y divide-slate-100 dark:divide-slate-800">
-              {allTransactions.map((t) => (
+              {visibleTransactions.map((t) => (
                 <div key={`${t.type}-${t.id}`} className="p-6 flex items-center justify-between hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors">
                   <div className="flex items-center gap-4">
                     <div className={`w-12 h-12 rounded-xl flex items-center justify-center ${t.type === 'membership' ? 'bg-purple-100 text-purple-600 dark:bg-purple-900/30 dark:text-purple-400' : 'bg-teal-100 text-teal-600 dark:bg-teal-900/30 dark:text-teal-400'}`}>

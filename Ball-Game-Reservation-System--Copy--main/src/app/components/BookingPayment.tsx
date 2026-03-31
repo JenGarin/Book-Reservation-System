@@ -47,6 +47,29 @@ export function BookingPayment() {
   const [mobileNumber, setMobileNumber] = useState('');
   const [submitting, setSubmitting] = useState(false);
 
+  const markRecentPaymentFlow = () => {
+    try {
+      sessionStorage.setItem('ventra_recent_payment_flow', String(Date.now()));
+    } catch {
+      // Ignore storage failures (private mode / blocked storage).
+    }
+  };
+
+  const markPendingPaymentBookings = (bookingIds: string[]) => {
+    try {
+      sessionStorage.setItem('ventra_payment_pending_started_at', String(Date.now()));
+      sessionStorage.setItem('ventra_payment_pending_booking_ids', JSON.stringify(bookingIds));
+    } catch {
+      // Ignore.
+    }
+  };
+
+  const isProbablyMobile = useMemo(() => {
+    if (typeof navigator === 'undefined') return false;
+    const ua = String(navigator.userAgent || '').toLowerCase();
+    return /android|iphone|ipad|ipod|mobile/.test(ua);
+  }, []);
+
   const releaseHoldIfNeeded = async () => {
     if (!usingBackendApi) return;
     for (const draft of drafts) {
@@ -93,17 +116,15 @@ export function BookingPayment() {
       return;
     }
 
+    markRecentPaymentFlow();
+
     if (!usingBackendApi) {
       const { appUrl, webUrl } = WALLET_LINKS[paymentMethod];
-      const appWindow = window.open(appUrl, '_blank', 'noopener,noreferrer');
-      if (!appWindow) {
-        window.open(webUrl, '_blank', 'noopener,noreferrer');
-      } else {
-        setTimeout(() => {
-          if (appWindow.closed) {
-            window.open(webUrl, '_blank', 'noopener,noreferrer');
-          }
-        }, 1200);
+      // Desktop browsers often treat wallet deep links as errors. Only attempt the app link on mobile.
+      const openedApp = isProbablyMobile ? Boolean(window.open(appUrl, '_blank', 'noopener,noreferrer')) : false;
+      const openedWeb = openedApp ? false : Boolean(window.open(webUrl, '_blank', 'noopener,noreferrer'));
+      if (!openedApp && !openedWeb) {
+        toast.error('Popup was blocked. Please allow popups and try again.');
       }
     }
 
@@ -111,8 +132,12 @@ export function BookingPayment() {
     try {
       const bookingIds: string[] = [];
       for (const draft of drafts) {
+        const draftDate = new Date(draft.date);
+        if (Number.isNaN(draftDate.getTime())) {
+          throw new Error('Invalid booking date. Please go back and select the slot again.');
+        }
         if (usingBackendApi && draft.bookingHoldId) {
-          const dateKey = format(new Date(draft.date), 'yyyy-MM-dd');
+          const dateKey = format(draftDate, 'yyyy-MM-dd');
           const holds = await backendApi.getMyBookingHolds({
             courtId: draft.courtId,
             date: dateKey,
@@ -132,7 +157,7 @@ export function BookingPayment() {
           courtId: draft.courtId,
           userId: currentUser.id,
           type: draft.type,
-          date: new Date(draft.date),
+          date: draftDate,
           startTime: draft.startTime,
           endTime: draft.endTime,
           duration: draft.duration,
@@ -147,6 +172,7 @@ export function BookingPayment() {
       }
 
       if (usingBackendApi) {
+        markPendingPaymentBookings(bookingIds);
         const checkoutUrls: string[] = [];
         for (const bookingId of bookingIds) {
           const tx = await backendApi.createPaymentCheckout(bookingId, paymentMethod);
@@ -162,9 +188,10 @@ export function BookingPayment() {
       } else {
         toast.success(`Booking request${bookingIds.length === 1 ? '' : 's'} sent to admin for approval.`);
       }
-      navigate('/my-bookings');
-    } catch (error) {
-      toast.error('Payment failed. Please try again.');
+      navigate('/my-bookings', { state: { fromPayment: true } });
+    } catch (error: any) {
+      const message = String(error?.message || '').trim();
+      toast.error(message || 'Payment failed. Please try again.');
     } finally {
       setSubmitting(false);
     }
@@ -222,7 +249,10 @@ export function BookingPayment() {
           <div className="space-y-3">
             <button
               type="button"
-              onClick={() => setPaymentMethod('gcash')}
+              onClick={() => {
+                markRecentPaymentFlow();
+                setPaymentMethod('gcash');
+              }}
               className={`w-full border rounded-xl p-3.5 flex items-center justify-between transition-colors ${
                 paymentMethod === 'gcash' ? 'border-teal-600 bg-teal-50 dark:bg-teal-900/30' : 'border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800'
               }`}
@@ -245,7 +275,10 @@ export function BookingPayment() {
             </button>
             <button
               type="button"
-              onClick={() => setPaymentMethod('maya')}
+              onClick={() => {
+                markRecentPaymentFlow();
+                setPaymentMethod('maya');
+              }}
               className={`w-full border rounded-xl p-3.5 flex items-center justify-between transition-colors ${
                 paymentMethod === 'maya' ? 'border-teal-600 bg-teal-50 dark:bg-teal-900/30' : 'border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800'
               }`}

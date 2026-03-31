@@ -6,6 +6,7 @@ Ventra is a standalone web app for court reservations, coach hiring, sessions, a
 
 1. Install dependencies:
    - `npm install`
+   - Recommended: use Node.js 20.x (LTS). See `.nvmrc`.
 2. Start the app:
    - `npm run dev`
 3. Open:
@@ -44,6 +45,8 @@ To enable it, set:
 - `VITE_SUPABASE_URL=<your-supabase-url>`
 - `VITE_SUPABASE_ANON_KEY=<your-anon-key>`
 
+Note: if `VITE_ENABLE_SUPABASE_AUTH=true` and the Supabase env vars are missing, the app will fail fast at startup.
+
 For web OAuth, configure these URLs as well:
 
 1. In Supabase `Authentication -> URL Configuration`
@@ -65,7 +68,16 @@ Important:
 
 Frontend can run in API-backed mode (for requests, notifications, and subscriptions) by setting:
 - `VITE_USE_BACKEND_API=true`
-- `VITE_API_BASE_URL=<your-api-base-url>` (example: `http://localhost:54321/functions/v1/server/api/v1`)
+- `VITE_API_BASE_URL=<your-api-base-url>`
+
+Local dev options:
+- Direct mode (no proxy): `VITE_API_BASE_URL=http://localhost:54321/functions/v1/server/api/v1`
+- Proxy mode (recommended): keep `VITE_API_BASE_URL=/api/v1` and set `VITE_API_PROXY_TARGET=http://localhost:54321`
+
+To run the backend locally with Supabase CLI:
+- `supabase start`
+- Copy `supabase/functions/server/.env.example` to `supabase/functions/server/.env` and fill values
+- `supabase functions serve server --env-file supabase/functions/server/.env`
 
 When API mode is enabled, the app now uses backend endpoints for:
 - login/signup/logout
@@ -74,6 +86,17 @@ When API mode is enabled, the app now uses backend endpoints for:
 - join session and mark-all-notifications-read
 
 For true multi-device shared bookings/data, enable backend API mode so all devices read/write the same data source.
+
+Important: backend persistence depends on Supabase server env vars. If `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY`
+are not set for the `server` edge function, it falls back to an in-memory store (data resets when the function restarts).
+Check `GET /api/v1/health` for the current `storage` mode and `db.missingTables` (indicates migrations not yet applied).
+
+Optional: switch backend auth from mock tokens to Supabase Auth by setting `AUTH_MODE=supabase` and providing
+`SUPABASE_ANON_KEY` (plus `SUPABASE_SERVICE_ROLE_KEY` for bearer token verification and password changes).
+
+Notes:
+- In `AUTH_MODE=mock`, passwords are stored as hashed credentials (PBKDF2) for better safety during local dev.
+- In `AUTH_MODE=supabase`, approving a coach registration creates a Supabase Auth user (service role) and triggers a password reset email (SMTP must be configured in Supabase).
 
 ## Backend Completion Notes
 
@@ -158,6 +181,7 @@ For absolute QR/receipt targets across devices, set:
 - `PUBLIC_APP_BASE_URL=http://<your-ip-or-domain>`
 - optional strict auth hardening:
   - `AUTH_REQUIRE_BEARER=true` (rejects header-only `x-user-id` auth and requires `Authorization: Bearer ...`)
+  - default behavior: if `AUTH_MODE=supabase` and `AUTH_REQUIRE_BEARER` is unset, bearer auth is required
 - optional rate limiting hardening:
   - `RATE_LIMIT_AUTH_LOGIN_MAX`, `RATE_LIMIT_AUTH_LOGIN_WINDOW_SEC`
   - `RATE_LIMIT_AUTH_SIGNUP_MAX`, `RATE_LIMIT_AUTH_SIGNUP_WINDOW_SEC`
@@ -193,3 +217,5 @@ After running schema SQL, your DB will include seeded records:
 - Users: `admin-1`, `staff-1`, `coach-1`, `player-1`
 - Courts: `c1`, `c2`, `c3`
 - Plans: `m1`, `m2`
+#   V e n t r a - C o u r t - R e s e r v a t i o n  
+ 

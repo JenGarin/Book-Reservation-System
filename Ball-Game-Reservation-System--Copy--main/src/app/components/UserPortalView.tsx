@@ -1,5 +1,6 @@
-import React from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { useApp } from '@/context/AppContext';
+import type { Booking, Notification } from '@/types';
 import { useLocation, useNavigate } from 'react-router-dom';
 import {
   Calendar,
@@ -20,8 +21,21 @@ export function UserPortalView() {
   const location = useLocation();
   const navigate = useNavigate();
   const isAdmin = currentUser?.role === 'admin';
+  const isStaff = currentUser?.role === 'staff';
 
-  const myNotifications = notifications.filter((n) => n.userId === currentUser?.id);
+  const recentlyFromPayment = useMemo(() => {
+    try {
+      const ts = Number(sessionStorage.getItem('ventra_recent_payment_flow') || 0);
+      return Boolean(ts && Date.now() - ts < 15_000);
+    } catch {
+      return false;
+    }
+  }, []);
+
+  const myNotifications = useMemo(
+    () => notifications.filter((n) => n.userId === currentUser?.id),
+    [notifications, currentUser?.id],
+  );
   const activePlan = userSubscription ? memberships.find((m) => m.id === userSubscription.membership_id) : null;
 
   const displayName = currentUser?.name || currentUser?.email?.split('@')[0] || 'User';
@@ -32,15 +46,40 @@ export function UserPortalView() {
     .slice(0, 2)
     .toUpperCase();
 
-  const nextBooking = bookings
-    .filter((b) => {
-      const isUpcomingConfirmed = b.status === 'confirmed' && new Date(b.date) >= new Date();
-      if (!isUpcomingConfirmed) return false;
-      return isAdmin ? true : b.userId === currentUser?.id;
-    })
-    .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime())[0];
+  const nextBooking = useMemo(() => {
+    return bookings
+      .filter((b) => {
+        const isUpcomingConfirmed = b.status === 'confirmed' && new Date(b.date) >= new Date();
+        if (!isUpcomingConfirmed) return false;
+        return isAdmin ? true : b.userId === currentUser?.id;
+      })
+      .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime())[0];
+  }, [bookings, isAdmin, currentUser?.id]);
 
-  const nextCourt = nextBooking ? courts.find((c) => c.id === nextBooking.courtId) : null;
+  const [visibleNotifications, setVisibleNotifications] = useState<Notification[]>(() => myNotifications as Notification[]);
+  const [visibleNextBooking, setVisibleNextBooking] = useState<Booking | undefined>(() => nextBooking as Booking | undefined);
+
+  useEffect(() => {
+    const emptyDelayMs = recentlyFromPayment ? 8000 : 600;
+    if (myNotifications.length > 0) {
+      setVisibleNotifications(myNotifications as Notification[]);
+      return;
+    }
+    const timeout = window.setTimeout(() => setVisibleNotifications([]), emptyDelayMs);
+    return () => window.clearTimeout(timeout);
+  }, [myNotifications, recentlyFromPayment]);
+
+  useEffect(() => {
+    const emptyDelayMs = recentlyFromPayment ? 8000 : 600;
+    if (nextBooking) {
+      setVisibleNextBooking(nextBooking as Booking);
+      return;
+    }
+    const timeout = window.setTimeout(() => setVisibleNextBooking(undefined), emptyDelayMs);
+    return () => window.clearTimeout(timeout);
+  }, [nextBooking, recentlyFromPayment]);
+
+  const nextCourt = visibleNextBooking ? courts.find((c) => c.id === visibleNextBooking.courtId) : null;
 
   const handleReschedule = () => {
     if (isAdmin) {
@@ -66,6 +105,32 @@ export function UserPortalView() {
     } catch (error: any) {
       toast.error(error?.message || 'Failed to cancel subscription.');
     }
+  };
+
+  const handlePreferencesClick = () => {
+    if (isAdmin) {
+      navigate('/settings');
+      return;
+    }
+    if (isStaff) {
+      navigate('/profile-settings');
+      return;
+    }
+    toast.info('Preferences are available in Profile Details.');
+    navigate('/profile-settings');
+  };
+
+  const handleSystemAccessClick = () => {
+    if (isAdmin || isStaff) {
+      navigate('/users');
+      return;
+    }
+    toast.info('Billing & payment is available under the Billing section.');
+    navigate('/billing');
+  };
+
+  const handleNotificationsClick = () => {
+    navigate('/notifications');
   };
 
   return (
@@ -119,19 +184,31 @@ export function UserPortalView() {
                 </div>
                 <ChevronRight size={16} className="text-slate-400 dark:text-slate-500" />
               </button>
-              <button className="w-full flex items-center justify-between p-3 rounded-lg hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors text-slate-700 dark:text-slate-300 font-medium text-sm">
+              <button
+                type="button"
+                onClick={handlePreferencesClick}
+                className="w-full flex items-center justify-between p-3 rounded-lg hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors text-slate-700 dark:text-slate-300 font-medium text-sm"
+              >
                 <div className="flex items-center gap-3">
                   <Settings size={18} /> {isAdmin ? 'Admin Preferences' : 'Preferences'}
                 </div>
                 <ChevronRight size={16} className="text-slate-400 dark:text-slate-500" />
               </button>
-              <button className="w-full flex items-center justify-between p-3 rounded-lg hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors text-slate-700 dark:text-slate-300 font-medium text-sm">
+              <button
+                type="button"
+                onClick={handleSystemAccessClick}
+                className="w-full flex items-center justify-between p-3 rounded-lg hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors text-slate-700 dark:text-slate-300 font-medium text-sm"
+              >
                 <div className="flex items-center gap-3">
                   <CreditCard size={18} /> {isAdmin ? 'System Access' : 'Billing & Payment'}
                 </div>
                 <ChevronRight size={16} className="text-slate-400 dark:text-slate-500" />
               </button>
-              <button className="w-full flex items-center justify-between p-3 rounded-lg hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors text-slate-700 dark:text-slate-300 font-medium text-sm">
+              <button
+                type="button"
+                onClick={handleNotificationsClick}
+                className="w-full flex items-center justify-between p-3 rounded-lg hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors text-slate-700 dark:text-slate-300 font-medium text-sm"
+              >
                 <div className="flex items-center gap-3">
                   <Bell size={18} /> Notifications
                 </div>
@@ -165,14 +242,14 @@ export function UserPortalView() {
         </div>
 
         <div className="lg:flex-1 space-y-8">
-          {myNotifications.length > 0 && (
+          {visibleNotifications.length > 0 && (
             <div className="bg-white dark:bg-slate-900 p-6 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm">
               <h3 className="font-bold text-slate-900 dark:text-slate-100 mb-4 flex items-center gap-2">
                 <Bell className="text-teal-600" size={20} />
                 Recent Notifications
               </h3>
               <div className="space-y-3">
-                {myNotifications.map((n) => (
+                {visibleNotifications.map((n) => (
                   <div key={n.id} className="p-4 bg-amber-50 dark:bg-amber-900/20 text-amber-900 dark:text-amber-200 rounded-xl flex items-start gap-3 border border-amber-100 dark:border-amber-900/40">
                     <AlertCircle size={18} className="mt-0.5 shrink-0 text-amber-600" />
                     <div>
@@ -186,10 +263,10 @@ export function UserPortalView() {
             </div>
           )}
 
-          {nextBooking ? (
+          {visibleNextBooking ? (
             <div className="bg-white dark:bg-slate-900 p-8 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm flex flex-col md:flex-row items-center gap-8">
               <div className="p-4 bg-slate-50 dark:bg-slate-800 rounded-2xl border border-slate-100 dark:border-slate-700">
-                <QRCode value={nextBooking.id} size={120} />
+                <QRCode value={visibleNextBooking.id} size={120} />
               </div>
               <div className="flex-1 text-center md:text-left">
                 <div className="inline-block px-3 py-1 bg-teal-50 text-teal-600 rounded-full text-[10px] font-bold uppercase tracking-widest mb-2">
@@ -199,7 +276,7 @@ export function UserPortalView() {
                   {nextCourt?.name || 'Unknown Court'}
                   {nextCourt?.type ? ` - ${nextCourt.type.charAt(0).toUpperCase()}${nextCourt.type.slice(1)}` : ''}
                 </h3>
-                <p className="text-slate-500 dark:text-slate-400 font-medium">{format(new Date(nextBooking.date), 'EEEE, MMM dd')} at {nextBooking.startTime}</p>
+                <p className="text-slate-500 dark:text-slate-400 font-medium">{format(new Date(visibleNextBooking.date), 'EEEE, MMM dd')} at {visibleNextBooking.startTime}</p>
                 <div className="flex flex-wrap gap-4 mt-6 justify-center md:justify-start">
                   <button
                     onClick={() => navigate('/check-in', { state: { from: `${location.pathname}${location.search}` } })}

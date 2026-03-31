@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { useApp } from '@/context/AppContext';
 import { Bell, CheckCircle, AlertTriangle, Info, XCircle } from 'lucide-react';
 import { format } from 'date-fns';
@@ -9,10 +9,36 @@ export function NotificationsView() {
   const { currentUser, notifications, markAllNotificationsAsRead, markNotificationAsRead, unreadNotificationCount } = useApp();
   const [viewMode, setViewMode] = useState<'recent' | 'all'>('recent');
   
-  const myNotifications = notifications
-    .filter((n: Notification) => n.userId === currentUser?.id)
-    .sort((a: Notification, b: Notification) => b.createdAt.getTime() - a.createdAt.getTime());
-  const displayedNotifications = viewMode === 'recent' ? myNotifications.slice(0, 5) : myNotifications;
+  const recentlyFromPayment = useMemo(() => {
+    try {
+      const ts = Number(sessionStorage.getItem('ventra_recent_payment_flow') || 0);
+      return Boolean(ts && Date.now() - ts < 15_000);
+    } catch {
+      return false;
+    }
+  }, []);
+
+  const myNotifications = useMemo(() => {
+    return notifications
+      .filter((n: Notification) => n.userId === currentUser?.id)
+      .sort((a: Notification, b: Notification) => b.createdAt.getTime() - a.createdAt.getTime());
+  }, [notifications, currentUser?.id]);
+
+  const [visibleNotifications, setVisibleNotifications] = useState<Notification[]>(() => myNotifications);
+
+  useEffect(() => {
+    const emptyDelayMs = recentlyFromPayment ? 8000 : 600;
+    if (myNotifications.length > 0) {
+      setVisibleNotifications(myNotifications);
+      return;
+    }
+    const timeout = window.setTimeout(() => setVisibleNotifications([]), emptyDelayMs);
+    return () => window.clearTimeout(timeout);
+  }, [myNotifications, recentlyFromPayment]);
+
+  const visibleUnreadCount = useMemo(() => visibleNotifications.filter((n) => !n.read).length, [visibleNotifications]);
+
+  const displayedNotifications = viewMode === 'recent' ? visibleNotifications.slice(0, 5) : visibleNotifications;
 
   const handleMarkAllRead = async () => {
     try {
@@ -59,10 +85,10 @@ export function NotificationsView() {
         </div>
         <div className="flex items-center gap-2">
           <div className="bg-white dark:bg-slate-800 px-4 py-2 rounded-lg border border-slate-200 dark:border-slate-700 shadow-sm">
-            <span className="font-bold text-slate-900 dark:text-white">{myNotifications.length}</span>
+            <span className="font-bold text-slate-900 dark:text-white">{visibleNotifications.length}</span>
             <span className="text-slate-500 dark:text-slate-400 ml-2">Total</span>
           </div>
-          {unreadNotificationCount > 0 && (
+          {(visibleUnreadCount || unreadNotificationCount) > 0 && (
             <button
               onClick={() => void handleMarkAllRead()}
               className="px-3 py-2 rounded-lg border border-teal-200 bg-teal-50 text-teal-700 text-sm font-semibold hover:bg-teal-100 transition-colors"

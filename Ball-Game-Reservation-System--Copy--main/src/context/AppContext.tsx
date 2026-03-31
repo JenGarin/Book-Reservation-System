@@ -14,6 +14,7 @@ import { addDays, format, isSameDay, parseISO } from 'date-fns';
 import { supabase } from './supabase';
 import { backendApi } from './backendApi';
 import { PASSWORD_MIN_LENGTH } from '@/config/authPolicy';
+import { getAuthCallbackUrl } from '@/utils/authRedirect';
 
 export interface UserSubscription {
   id: string;
@@ -35,6 +36,7 @@ type SignupPayload = {
   verificationDocumentName?: string;
   verificationId?: string;
   verificationNotes?: string;
+  adminCode?: string;
 };
 
 type LocalCoachRegistration = {
@@ -150,16 +152,17 @@ const rawUseSupabaseAuth = String(import.meta.env.VITE_ENABLE_SUPABASE_AUTH || '
 const USE_SUPABASE_AUTH = rawUseSupabaseAuth === 'true' || rawUseSupabaseAuth === '1' || rawUseSupabaseAuth === 'yes';
 const isSupabaseEmailConfirmed = (authUser: any) =>
   Boolean(authUser?.email_confirmed_at || authUser?.confirmed_at);
-const getAuthRedirectUrl = () => `${window.location.origin}/auth/callback`;
+const getAuthRedirectUrl = () => getAuthCallbackUrl();
 
 const SEED_USERS: User[] = [
-  { id: 'admin-1', email: 'admin@court.com', name: 'Admin User', role: 'admin', avatar: '', phone: '123-456-7890', skillLevel: 'expert', createdAt: new Date() },
-  { id: 'staff-1', email: 'staff@court.com', name: 'Staff Member', role: 'staff', avatar: '', phone: '123-456-7890', skillLevel: 'advanced', createdAt: new Date() },
+  { id: 'admin-1', email: 'admin@court.com', name: 'Admin User', role: 'admin', status: 'active', avatar: '', phone: '123-456-7890', skillLevel: 'expert', createdAt: new Date() },
+  { id: 'staff-1', email: 'staff@court.com', name: 'Staff Member', role: 'staff', status: 'active', avatar: '', phone: '123-456-7890', skillLevel: 'advanced', createdAt: new Date() },
   {
     id: 'coach-1',
     email: 'coach@court.com',
     name: 'Coach Mike',
     role: 'coach',
+    status: 'active',
     avatar: '',
     phone: '123-456-7890',
     skillLevel: 'expert',
@@ -171,7 +174,8 @@ const SEED_USERS: User[] = [
     coachVerificationSubmittedAt: new Date().toISOString(),
     createdAt: new Date()
   },
-  { id: 'player-1', email: 'player@court.com', name: 'Alex Johnson', role: 'player', avatar: '', phone: '123-456-7890', skillLevel: 'intermediate', createdAt: new Date() },
+  { id: 'player-1', email: 'player@court.com', name: 'Alex Johnson', role: 'player', status: 'active', avatar: '', phone: '123-456-7890', skillLevel: 'intermediate', createdAt: new Date() },
+  { id: 'quick-guest', email: 'quick-booking@guest.local', name: 'Quick Reservation', role: 'player', status: 'active', avatar: '', phone: '', createdAt: new Date() },
 ];
 
 const SEED_COURTS: Court[] = [
@@ -224,7 +228,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [backendUnreadNotificationCount, setBackendUnreadNotificationCount] = useState<number | null>(null);
   const localUnreadNotificationCount = notifications.filter((n) => n.userId === currentUser?.id && !n.read).length;
   const unreadNotificationCount = usingBackendApi
-    ? (backendUnreadNotificationCount ?? localUnreadNotificationCount)
+    ? (backendUnreadNotificationCount == null
+        ? localUnreadNotificationCount
+        : Math.max(backendUnreadNotificationCount, localUnreadNotificationCount))
     : localUnreadNotificationCount;
 
   const mapBackendSubscription = (subscription: any): UserSubscription => {
@@ -264,6 +270,66 @@ export function AppProvider({ children }: { children: ReactNode }) {
     async (user: User) => {
       if (!usingBackendApi) return;
       try {
+        const readPendingPaymentBookingIds = (): string[] => {
+          try {
+            const raw = sessionStorage.getItem('ventra_payment_pending_booking_ids');
+            const parsed = raw ? JSON.parse(raw) : [];
+            return Array.isArray(parsed) ? parsed.map((id) => String(id)) : [];
+          } catch {
+            return [];
+          }
+        };
+        const isPendingPaymentWindowActive = () => {
+          try {
+            const startedAt = Number(sessionStorage.getItem('ventra_payment_pending_started_at') || 0);
+            const pendingIds = readPendingPaymentBookingIds();
+            if (!pendingIds.length) return false;
+            // Keep a generous window while checkout is pending.
+            if (!startedAt) return true;
+            return Date.now() - startedAt < 30 * 60 * 1000;
+          } catch {
+            return false;
+          }
+        };
+
+        const preserveDuringRecentPayment = () => {
+          try {
+            const ts = Number(sessionStorage.getItem('ventra_recent_payment_flow') || 0);
+            const recent = Boolean(ts && Date.now() - ts < 15_000);
+            return recent || isPendingPaymentWindowActive();
+          } catch {
+            return isPendingPaymentWindowActive();
+          }
+        };
+        const preferNonEmptyArray = <T,>(prev: T[], next: T[]) => {
+          if (next.length > 0) return next;
+          if (prev.length > 0 && preserveDuringRecentPayment()) return prev;
+          return next;
+        };
+        const preferPopulatedObject = <T extends Record<string, any>>(prev: T, next: T) => {
+          if (next && Object.keys(next).length > 0) return next;
+          if (prev && Object.keys(prev).length > 0 && preserveDuringRecentPayment()) return prev;
+          return next;
+        };
+        const mergeWithGrace = <T extends { id: string; createdAt?: Date }>(
+          prev: T[],
+          next: T[],
+          options: { graceMs: number },
+        ) => {
+          if (!prev.length) return next;
+          if (!next.length) {
+            return preserveDuringRecentPayment() ? prev : next;
+          }
+          const nextById = new Map(next.map((item) => [item.id, item]));
+          const now = Date.now();
+          const keptPrev = prev.filter((item) => {
+            if (nextById.has(item.id)) return false;
+            const createdAt = item.createdAt instanceof Date ? item.createdAt.getTime() : 0;
+            return createdAt > 0 && now - createdAt < options.graceMs;
+          });
+          return keptPrev.length ? [...next, ...keptPrev] : next;
+        };
+
         const [nextUsers, nextCourts, nextBookings, nextPlans, nextNotifications, nextConfig, unreadCount] = await Promise.all([
           backendApi.getUsers(user.role),
           backendApi.getCourts(),
@@ -273,16 +339,50 @@ export function AppProvider({ children }: { children: ReactNode }) {
           backendApi.getConfig(),
           backendApi.getUnreadNotificationsCount().catch(() => null),
         ]);
-        setUsers(nextUsers);
-        setCourts(nextCourts);
-        setBookings(nextBookings);
-        setMemberships(nextPlans);
-        setNotifications(nextNotifications);
-        setConfig(nextConfig);
+
+        // If the checkout has completed (or the booking is gone), clear the pending window.
+        try {
+          const pendingIds = readPendingPaymentBookingIds();
+          if (pendingIds.length) {
+            const byId = new Map(nextBookings.map((b) => [b.id, b]));
+            const allResolved = pendingIds.every((id) => {
+              const booking = byId.get(id);
+              if (!booking) return true;
+              const paymentStatus = String((booking as any)?.paymentStatus || '').toLowerCase();
+              const status = String((booking as any)?.status || '').toLowerCase();
+              if (status === 'cancelled' || status === 'completed' || status === 'no_show') return true;
+              return paymentStatus === 'paid';
+            });
+            if (allResolved) {
+              sessionStorage.removeItem('ventra_payment_pending_booking_ids');
+              sessionStorage.removeItem('ventra_payment_pending_started_at');
+            }
+          }
+        } catch {
+          // Ignore.
+        }
+
+        setUsers((prev) => preferNonEmptyArray(prev, nextUsers));
+        setCourts((prev) => preferNonEmptyArray(prev, nextCourts));
+        setBookings((prev) => mergeWithGrace(prev, nextBookings, { graceMs: 2 * 60 * 1000 }));
+        setMemberships((prev) => preferNonEmptyArray(prev, nextPlans));
+        setNotifications((prev) => mergeWithGrace(prev, nextNotifications, { graceMs: 2 * 60 * 1000 }));
+        setConfig((prev) => preferPopulatedObject(prev, nextConfig));
         if (typeof unreadCount === 'number') {
-          setBackendUnreadNotificationCount(unreadCount);
+          setBackendUnreadNotificationCount((prev) => {
+            if (preserveDuringRecentPayment() && unreadCount === 0 && typeof prev === 'number' && prev > 0) {
+              return prev;
+            }
+            return unreadCount;
+          });
         } else {
-          setBackendUnreadNotificationCount(nextNotifications.filter((n) => n.userId === user.id && !n.read).length);
+          setBackendUnreadNotificationCount((prev) => {
+            const nextUnread = nextNotifications.filter((n) => n.userId === user.id && !n.read).length;
+            if (preserveDuringRecentPayment() && nextUnread === 0 && typeof prev === 'number' && prev > 0) {
+              return prev;
+            }
+            return nextUnread;
+          });
         }
       } catch (error) {
         console.error('Failed to hydrate backend data:', error);
@@ -303,6 +403,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         ...profile,
         email,
         role: (profile.role || existing.role || role) as User['role'],
+        status: (profile.status || existing.status || 'active') as User['status'],
       };
       const updatedUsers = users.map((u) => (u.id === existing.id ? updatedExisting : u));
       setUsers(updatedUsers);
@@ -317,6 +418,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       email,
       name: profile.name || email.split('@')[0],
       role: (profile.role || role) as any,
+      status: (profile.status || 'active') as User['status'],
       avatar: profile.avatar || '',
       phone: profile.phone || '',
       skillLevel: profile.skillLevel || 'beginner',
@@ -344,12 +446,86 @@ export function AppProvider({ children }: { children: ReactNode }) {
       if (!email) return;
 
       const metadata = authUser?.user_metadata || {};
-      const role = String(metadata?.role || fallbackRole || localStorage.getItem(STORAGE_KEYS.OAUTH_ROLE) || 'player').toLowerCase();
-      upsertAndSetCurrentUser(email, role, {
+      const storedFlow = String(localStorage.getItem(STORAGE_KEYS.OAUTH_FLOW) || '').toLowerCase();
+      const storedOauthRole = String(localStorage.getItem(STORAGE_KEYS.OAUTH_ROLE) || '').toLowerCase();
+      const existingUser = users.find((u) => String(u.email || '').trim().toLowerCase() === email) || null;
+
+      const normalizeRole = (value: unknown) => {
+        const raw = String(value || '').trim().toLowerCase();
+        return raw === 'admin' || raw === 'staff' || raw === 'coach' || raw === 'player' ? raw : '';
+      };
+      const normalizeStatus = (value: unknown) => {
+        const raw = String(value || '').trim().toLowerCase();
+        return raw === 'active' || raw === 'pending' ? raw : '';
+      };
+      const roleMatchesExpected = (actual: string, expected: string) => {
+        if (expected === 'admin') return actual === 'admin' || actual === 'staff';
+        return actual === expected;
+      };
+
+      const metadataRole = normalizeRole(metadata?.role);
+      const metadataStatus = normalizeStatus(metadata?.status);
+      const fallback = normalizeRole(fallbackRole);
+      const existingRole = normalizeRole(existingUser?.role);
+      const existingStatus = normalizeStatus(existingUser?.status);
+      const expectedPortalRole = storedOauthRole === 'admin' || storedOauthRole === 'coach' || storedOauthRole === 'player' ? storedOauthRole : '';
+
+      // Enforce that the OAuth portal role must match the actual account role.
+      if (storedFlow === 'signin' && expectedPortalRole) {
+        const actualForCheck = metadataRole || existingRole;
+        if (!actualForCheck) {
+          localStorage.setItem(
+            'ventra_oauth_error',
+            `No account is registered for this portal yet. Please create an account first.`,
+          );
+          localStorage.removeItem(STORAGE_KEYS.OAUTH_FLOW);
+          localStorage.removeItem(STORAGE_KEYS.OAUTH_ROLE);
+          void supabase.auth.signOut();
+          setCurrentUser(null);
+          localStorage.removeItem('currentUser');
+          return;
+        }
+        if (!roleMatchesExpected(actualForCheck, expectedPortalRole)) {
+          localStorage.setItem(
+            'ventra_oauth_error',
+            `This account is not ${expectedPortalRole === 'admin' ? 'an' : 'a'} ${expectedPortalRole} account.`,
+          );
+          localStorage.removeItem(STORAGE_KEYS.OAUTH_FLOW);
+          localStorage.removeItem(STORAGE_KEYS.OAUTH_ROLE);
+          void supabase.auth.signOut();
+          setCurrentUser(null);
+          localStorage.removeItem('currentUser');
+          return;
+        }
+      }
+
+      // Pick a role without allowing "portal role" escalation.
+      // For OAuth signup we only allow Player role assignment from the chosen portal.
+      const resolvedRole =
+        metadataRole ||
+        fallback ||
+        existingRole ||
+        (storedFlow === 'signup' && expectedPortalRole === 'player' ? 'player' : '') ||
+        'player';
+
+      const resolvedStatus = (metadataStatus || existingStatus || (resolvedRole === 'coach' ? 'pending' : 'active')) as User['status'];
+
+      if (resolvedRole === 'coach' && resolvedStatus === 'pending') {
+        localStorage.setItem('ventra_oauth_error', 'Your coach account is awaiting approval.');
+        localStorage.removeItem(STORAGE_KEYS.OAUTH_FLOW);
+        localStorage.removeItem(STORAGE_KEYS.OAUTH_ROLE);
+        void supabase.auth.signOut();
+        setCurrentUser(null);
+        localStorage.removeItem('currentUser');
+        return;
+      }
+
+      upsertAndSetCurrentUser(email, resolvedRole, {
         name: String(metadata?.name || metadata?.full_name || email.split('@')[0]).trim(),
         phone: String(metadata?.phone || '').trim(),
         avatar: String(metadata?.avatar_url || metadata?.picture || '').trim(),
-        role: role as User['role'],
+        role: resolvedRole as User['role'],
+        status: resolvedStatus,
       });
       if (localStorage.getItem(STORAGE_KEYS.OAUTH_FLOW) === 'signup') {
         localStorage.setItem(STORAGE_KEYS.OAUTH_CONFIRMATION_PENDING, email);
@@ -539,9 +715,23 @@ export function AppProvider({ children }: { children: ReactNode }) {
     password: string,
     expectedRole?: User['role']
   ): Promise<{ success: boolean; message?: string }> => {
+    const roleMatchesExpected = (actual: User['role'], expected: User['role']) => {
+      if (expected === 'admin') return actual === 'admin' || actual === 'staff';
+      return actual === expected;
+    };
+    const makeRoleMismatchMessage = (role: User['role']) => {
+      const article = role === 'admin' ? 'an' : 'a';
+      return `This account is not ${article} ${role} account.`;
+    };
     if (usingBackendApi) {
       try {
         const user = await backendApi.login(email, password, expectedRole);
+        if (expectedRole && !roleMatchesExpected(user.role, expectedRole)) {
+          backendApi.clearSession();
+          setCurrentUser(null);
+          localStorage.removeItem('currentUser');
+          return { success: false, message: makeRoleMismatchMessage(expectedRole) };
+        }
         setCurrentUser(user);
         localStorage.setItem('currentUser', JSON.stringify(user));
         await hydrateBackendData(user);
@@ -553,29 +743,52 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
     if (usingSupabaseAuth) {
       try {
+        const portalExpectedRole =
+          expectedRole === 'admin' || expectedRole === 'coach' || expectedRole === 'player' ? expectedRole : undefined;
+        if (portalExpectedRole) {
+          localStorage.setItem(STORAGE_KEYS.OAUTH_FLOW, 'signin');
+          localStorage.setItem(STORAGE_KEYS.OAUTH_ROLE, portalExpectedRole);
+        }
         const { data, error } = await supabase.auth.signInWithPassword({
           email: email.trim().toLowerCase(),
           password,
         });
         if (error) {
+          localStorage.removeItem(STORAGE_KEYS.OAUTH_FLOW);
+          localStorage.removeItem(STORAGE_KEYS.OAUTH_ROLE);
           return { success: false, message: error.message };
         }
         const authUser = data.user;
         if (!authUser?.email) {
+          localStorage.removeItem(STORAGE_KEYS.OAUTH_FLOW);
+          localStorage.removeItem(STORAGE_KEYS.OAUTH_ROLE);
           return { success: false, message: 'Login failed.' };
         }
         if (!isSupabaseEmailConfirmed(authUser)) {
           await supabase.auth.signOut();
+          localStorage.removeItem(STORAGE_KEYS.OAUTH_FLOW);
+          localStorage.removeItem(STORAGE_KEYS.OAUTH_ROLE);
           return { success: false, message: 'Please confirm your email before signing in.' };
         }
         const authRole = String(authUser.user_metadata?.role || 'player').toLowerCase() as User['role'];
-        if (expectedRole && authRole !== expectedRole) {
+        const localUser = users.find((u) => u.email.toLowerCase() === authUser.email!.toLowerCase()) || null;
+        if (authRole === 'coach' && (!localUser || localUser.status === 'pending')) {
           await supabase.auth.signOut();
+          localStorage.removeItem(STORAGE_KEYS.OAUTH_FLOW);
+          localStorage.removeItem(STORAGE_KEYS.OAUTH_ROLE);
+          return { success: false, message: 'Your coach account is awaiting approval.' };
+        }
+        if (expectedRole && !roleMatchesExpected(authRole, expectedRole)) {
+          await supabase.auth.signOut();
+          localStorage.removeItem(STORAGE_KEYS.OAUTH_FLOW);
+          localStorage.removeItem(STORAGE_KEYS.OAUTH_ROLE);
           return { success: false, message: `This account is not ${expectedRole === 'admin' ? 'an' : 'a'} ${expectedRole} account.` };
         }
         syncSupabaseUser(authUser, authRole);
         return { success: true };
       } catch (error: any) {
+        localStorage.removeItem(STORAGE_KEYS.OAUTH_FLOW);
+        localStorage.removeItem(STORAGE_KEYS.OAUTH_ROLE);
         return { success: false, message: error?.message || 'Login failed.' };
       }
     }
@@ -598,15 +811,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
       ([storedEmail]) => storedEmail.toLowerCase() === normalizedEmail
     )?.[1];
     
-    const makeRoleMismatchMessage = (role: User['role']) => {
-      const article = role === 'admin' ? 'an' : 'a';
-      return `This account is not ${article} ${role} account.`;
-    };
-
     if (seedCreds[normalizedEmail] === password || storedAuthPassword === password) {
       const user = users.find(u => u.email.toLowerCase() === normalizedEmail);
       if (user) {
-        if (expectedRole && user.role !== expectedRole) {
+        if (user.role === 'coach' && user.status === 'pending') {
+          return { success: false, message: 'Your coach account is awaiting approval.' };
+        }
+        if (expectedRole && !roleMatchesExpected(user.role, expectedRole)) {
           return { success: false, message: makeRoleMismatchMessage(expectedRole) };
         }
         setCurrentUser(user);
@@ -623,7 +834,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
             ? 'coach'
             : 'player';
 
-      if (expectedRole && roleFromSeed !== expectedRole) {
+      if (expectedRole && !roleMatchesExpected(roleFromSeed, expectedRole)) {
         return { success: false, message: makeRoleMismatchMessage(expectedRole) };
       }
 
@@ -632,6 +843,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         email: normalizedEmail,
         name: normalizedEmail.split('@')[0],
         role: roleFromSeed,
+        status: 'active',
         avatar: '',
         phone: '',
         skillLevel: roleFromSeed === 'admin' ? 'expert' : 'beginner',
@@ -649,8 +861,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
     // Fallback for dev user if not in users list yet
     if (normalizedEmail === 'junavirtudazo@gmail.com') {
-      const devUser = { id: 'dev-1', email: normalizedEmail, name: 'Juna Virtudazo', role: 'admin', avatar: '', phone: '', skillLevel: 'expert', createdAt: new Date() };
-      if (expectedRole && devUser.role !== expectedRole) {
+      const devUser: User = { id: 'dev-1', email: normalizedEmail, name: 'Juna Virtudazo', role: 'admin', status: 'active', avatar: '', phone: '', skillLevel: 'expert', createdAt: new Date() };
+      if (expectedRole && !roleMatchesExpected(devUser.role, expectedRole)) {
         return { success: false, message: makeRoleMismatchMessage(expectedRole) };
       }
       setCurrentUser(devUser);
@@ -679,6 +891,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
           verificationDocumentName: payload.verificationDocumentName,
           verificationId: payload.verificationId,
           verificationNotes: payload.verificationNotes,
+          adminCode: payload.adminCode,
         });
         return {
           success: true,
@@ -696,8 +909,26 @@ export function AppProvider({ children }: { children: ReactNode }) {
         if (!password || password.trim().length < PASSWORD_MIN_LENGTH) {
           return { success: false, message: `Password must be at least ${PASSWORD_MIN_LENGTH} characters.` };
         }
+        const normalizedRole = role.toLowerCase();
+        const adminCode = String(payload.adminCode || '').trim();
+        const expectedAdminCode = String(import.meta.env.VITE_ADMIN_SIGNUP_CODE || '').trim() || 'ADMIN1234';
+        if (normalizedRole === 'admin') {
+          if (!adminCode || adminCode !== expectedAdminCode) {
+            return { success: false, message: 'Invalid admin code.' };
+          }
+        }
         if (requestedCoach) {
-          return { success: false, message: 'Coach signup still requires manual verification. Please use email signup without social auth for coach registration.' };
+          const method = payload.verificationMethod;
+          const documentName = payload.verificationDocumentName?.trim() || '';
+          if (!payload.name?.trim()) {
+            return { success: false, message: 'Full name is required for coach registration.' };
+          }
+          if (!method) {
+            return { success: false, message: 'Verification method is required for coach registration.' };
+          }
+          if (!documentName) {
+            return { success: false, message: 'Verification document name is required for coach registration.' };
+          }
         }
         const { data, error } = await supabase.auth.signUp({
           email: email.trim().toLowerCase(),
@@ -707,12 +938,39 @@ export function AppProvider({ children }: { children: ReactNode }) {
             data: {
               name: payload.name?.trim() || email.split('@')[0],
               phone: payload.phone?.trim() || '',
-              role: role.toLowerCase(),
+              role: normalizedRole,
+              status: requestedCoach ? 'pending' : 'active',
             },
           },
         });
         if (error) {
           return { success: false, message: error.message };
+        }
+        if (requestedCoach) {
+          const newUser: User = {
+            id: String(data.user?.id || Math.random().toString(36).substr(2, 9)),
+            email: email.trim().toLowerCase(),
+            name: payload.name?.trim() || email.split('@')[0],
+            role: 'coach',
+            status: 'pending',
+            avatar: '',
+            phone: payload.phone?.trim() || '',
+            skillLevel: 'beginner',
+            coachProfile: payload.coachProfile?.trim() || '',
+            coachExpertise: (payload.coachExpertise || []).filter(Boolean),
+            coachVerificationStatus: 'pending',
+            coachVerificationMethod: payload.verificationMethod,
+            coachVerificationDocumentName: payload.verificationDocumentName?.trim(),
+            coachVerificationId: payload.verificationId?.trim() || undefined,
+            coachVerificationNotes: payload.verificationNotes?.trim() || undefined,
+            coachVerificationSubmittedAt: new Date().toISOString(),
+            createdAt: new Date(),
+          };
+          const updatedUsers = [...users, newUser];
+          setUsers(updatedUsers);
+          persist(STORAGE_KEYS.USERS, updatedUsers);
+          await supabase.auth.signOut();
+          return { success: true, message: 'Your coach account request is under review by the administrator.' };
         }
         if (data.session && data.user && !isSupabaseEmailConfirmed(data.user)) {
           await supabase.auth.signOut();
@@ -758,35 +1016,46 @@ export function AppProvider({ children }: { children: ReactNode }) {
         if (!documentName) {
           return { success: false, message: 'Verification document name is required for coach registration.' };
         }
-        const registrations: LocalCoachRegistration[] = JSON.parse(localStorage.getItem(STORAGE_KEYS.COACH_REGISTRATIONS) || '[]');
-        const duplicatePending = registrations.find(
-          (registration) => registration.email.toLowerCase() === email.toLowerCase() && registration.status === 'pending'
-        );
-        if (duplicatePending) {
-          return { success: false, message: 'A coach registration for this email is already pending.' };
-        }
-        const now = new Date().toISOString();
-        const registration: LocalCoachRegistration = {
+        const newCoach: User = {
           id: Math.random().toString(36).substr(2, 9),
           email,
-          password,
           name: payload.name.trim(),
-          phone: payload.phone?.trim() || undefined,
-          coachProfile: payload.coachProfile?.trim() || undefined,
-          coachExpertise: (payload.coachExpertise || []).filter(Boolean),
-          verificationMethod: method,
-          verificationDocumentName: documentName,
-          verificationId: payload.verificationId?.trim() || undefined,
-          verificationNotes: payload.verificationNotes?.trim() || undefined,
+          role: 'coach',
           status: 'pending',
-          createdAt: now,
-          updatedAt: now,
+          avatar: '',
+          phone: payload.phone?.trim() || '',
+          skillLevel: 'beginner',
+          coachProfile: payload.coachProfile?.trim() || '',
+          coachExpertise: (payload.coachExpertise || []).filter(Boolean),
+          coachVerificationStatus: 'pending',
+          coachVerificationMethod: method,
+          coachVerificationDocumentName: documentName,
+          coachVerificationId: payload.verificationId?.trim() || undefined,
+          coachVerificationNotes: payload.verificationNotes?.trim() || undefined,
+          coachVerificationSubmittedAt: new Date().toISOString(),
+          createdAt: new Date(),
         };
-        persist(STORAGE_KEYS.COACH_REGISTRATIONS, [...registrations, registration]);
+
+        const updatedUsers = [...users, newCoach];
+        setUsers(updatedUsers);
+        persist(STORAGE_KEYS.USERS, updatedUsers);
+
+        const auth = JSON.parse(localStorage.getItem(STORAGE_KEYS.AUTH) || '{}');
+        auth[email] = password;
+        persist(STORAGE_KEYS.AUTH, auth);
         return {
           success: true,
-          message: 'Coach registration submitted. Wait for admin approval before signing in.',
+          message: 'Your coach account request is under review by the administrator.',
         };
+      }
+
+      const normalizedRole = role.toLowerCase();
+      if (normalizedRole === 'admin') {
+        const adminCode = String(payload.adminCode || '').trim();
+        const expectedAdminCode = String(import.meta.env.VITE_ADMIN_SIGNUP_CODE || '').trim() || 'ADMIN1234';
+        if (!adminCode || adminCode !== expectedAdminCode) {
+          return { success: false, message: 'Invalid admin code.' };
+        }
       }
 
       const newUser: User = {
@@ -794,6 +1063,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         email,
         name: payload.name?.trim() || email.split('@')[0],
         role: role as any,
+        status: 'active',
         avatar: '',
         phone: payload.phone?.trim() || '',
         skillLevel: 'beginner',
@@ -993,10 +1263,16 @@ export function AppProvider({ children }: { children: ReactNode }) {
       return;
     }
 
-    const booking = bookings.find((b) => b.id === id);
-    const updatedBookings = bookings.map((b) => (b.id === id ? { ...b, status: 'cancelled' as const } : b));
-    setBookings(updatedBookings);
-    persist(STORAGE_KEYS.BOOKINGS, updatedBookings);
+    let booking: Booking | undefined;
+    setBookings((prev) => {
+      const index = prev.findIndex((b) => b.id === id);
+      if (index < 0) return prev;
+      booking = prev[index];
+      const updatedBookings = [...prev];
+      updatedBookings[index] = { ...updatedBookings[index], status: 'cancelled' as const };
+      persist(STORAGE_KEYS.BOOKINGS, updatedBookings);
+      return updatedBookings;
+    });
 
     if (booking) {
       const newNotifications: any[] = [];
@@ -1048,12 +1324,17 @@ export function AppProvider({ children }: { children: ReactNode }) {
       return;
     }
 
-    const booking = bookings.find((b) => b.id === id);
+    let booking: Booking | undefined;
+    setBookings((prev) => {
+      const index = prev.findIndex((b) => b.id === id);
+      if (index < 0) return prev;
+      booking = prev[index];
+      const updatedBookings = [...prev];
+      updatedBookings[index] = { ...updatedBookings[index], status: 'confirmed' as const };
+      persist(STORAGE_KEYS.BOOKINGS, updatedBookings);
+      return updatedBookings;
+    });
     if (!booking) return;
-
-    const updatedBookings = bookings.map((b) => (b.id === id ? { ...b, status: 'confirmed' as const } : b));
-    setBookings(updatedBookings);
-    persist(STORAGE_KEYS.BOOKINGS, updatedBookings);
 
     // Notify the user
     const notification: any = {
@@ -1407,6 +1688,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       name: registration.name,
       phone: registration.phone || '',
       role: 'coach',
+      status: registration.status === 'pending' ? 'pending' : 'active',
       skillLevel: 'beginner',
       coachProfile: registration.coachProfile,
       coachExpertise: registration.coachExpertise || [],
@@ -1464,6 +1746,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         email: registration.email,
         name: registration.name,
         role: 'coach',
+        status: 'active',
         avatar: '',
         phone: registration.phone || '',
         skillLevel: 'beginner',
@@ -1495,6 +1778,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         ? {
             ...u,
             role: 'coach' as const,
+            status: 'active' as const,
             coachVerificationStatus: 'verified' as const,
             coachVerificationNotes: notes?.trim() || u.coachVerificationNotes,
           }
@@ -1542,6 +1826,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         ? {
             ...u,
             role: u.role === 'admin' || u.role === 'staff' ? u.role : ('player' as const),
+            status: 'active' as const,
             coachVerificationStatus: 'rejected' as const,
             coachVerificationNotes: reason?.trim() || u.coachVerificationNotes,
           }
